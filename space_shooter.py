@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 
 SAMPLE_RATE = 22050
+LIGHT_YEAR_KILOMETERS = 9461000000000
+CRASH_DISTANCE_KILOMETERS = 0.0001
 
 
 def make_music_loop(notes, volume):
@@ -67,9 +69,15 @@ boss_music = [
 
 SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
+TARGET_FPS = 60
+DISPLAY_FLAGS = pygame.SCALED | pygame.DOUBLEBUF
 
-screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+try:
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), DISPLAY_FLAGS, vsync=1)
+except TypeError:
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), DISPLAY_FLAGS)
 pygame.display.set_caption("Space Shooter")
+pygame.event.set_allowed([pygame.QUIT, pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN])
 clock = pygame.time.Clock()
 running = True
 
@@ -149,10 +157,54 @@ def get_distance_color(distance):
 
 
 def format_distance(distance):
-    if distance < 0.001:
-        kilometers = max(1, int(distance * 9461000000000))
-        return str(kilometers) + " km"
+    if distance < 1:
+        kilometers = distance * LIGHT_YEAR_KILOMETERS
+        meters = kilometers * 1000
+        if kilometers >= 1000000000:
+            return str(round(kilometers / 1000000000, 1)) + " billion km"
+        if kilometers >= 1000000:
+            return str(round(kilometers / 1000000, 1)) + " million km"
+        if kilometers >= 1000:
+            return str(round(kilometers / 1000, 1)) + " thousand km"
+        if kilometers >= 100:
+            return str(round(kilometers, 1)) + " km"
+        if kilometers >= 10:
+            return str(round(kilometers, 1)) + " km"
+        if meters >= 100:
+            return str(round(meters, 1)) + " m"
+        if meters >= 10:
+            return str(round(meters, 1)) + " m"
+        return str(round(meters, 1)) + " m"
     return str(int(distance)) + " LY"
+
+
+def get_close_center_speed_limit(distance):
+    kilometers = distance * LIGHT_YEAR_KILOMETERS
+    if kilometers >= 1000000000:
+        return 800000000000 / LIGHT_YEAR_KILOMETERS
+    if kilometers >= 1000000:
+        return 80000000 / LIGHT_YEAR_KILOMETERS
+    if kilometers >= 1000:
+        return 80000 / LIGHT_YEAR_KILOMETERS
+    if kilometers >= 100:
+        return 80 / LIGHT_YEAR_KILOMETERS
+    if kilometers >= 10:
+        return 8 / LIGHT_YEAR_KILOMETERS
+    if kilometers >= 0.1:
+        return 0.8 / LIGHT_YEAR_KILOMETERS
+    if kilometers >= 0.01:
+        return 0.008 / LIGHT_YEAR_KILOMETERS
+    return 0.0008 / LIGHT_YEAR_KILOMETERS
+
+
+def format_radial_speed(speed, distance):
+    if distance >= 1:
+        return str(round(abs(speed), 1)) + " LY/S"
+
+    kilometers_per_second = abs(speed) * LIGHT_YEAR_KILOMETERS
+    if kilometers_per_second >= 1:
+        return str(round(kilometers_per_second, 1)) + " KM/S"
+    return str(round(kilometers_per_second * 1000, 1)) + " M/S"
 
 
 def draw_galaxy_progress(distance, radial_speed, orbit_speed, orbit_angle):
@@ -208,7 +260,7 @@ def draw_galaxy_progress(distance, radial_speed, orbit_speed, orbit_angle):
         direction = "ORBIT"
 
     speed_lines = [
-        "SPEED " + str(int(abs(radial_speed))) + " LY/S",
+        "SPEED " + format_radial_speed(radial_speed, distance),
         "DIR " + direction,
         "ORBIT " + str(int(orbit_speed)) + " DEG/S",
     ]
@@ -245,14 +297,13 @@ def get_laser_damage(laser):
 
 
 def apply_upgrade(upgrade_name):
-    global gun_upgrade_level, shield_upgrade_level, engine_upgrade_level, shield_max, shield_current, upgrade_screen
+    global gun_upgrade_level, shield_upgrade_level, engine_upgrade_level, lives, upgrade_screen
 
     if upgrade_name == "guns":
         gun_upgrade_level = gun_upgrade_level + 1
     elif upgrade_name == "shields":
         shield_upgrade_level = shield_upgrade_level + 1
-        shield_max = 100 * (1.2 ** shield_upgrade_level)
-        shield_current = min(shield_max, shield_current + shield_max * 0.2)
+        lives = lives + 20
     elif upgrade_name == "engine":
         engine_upgrade_level = engine_upgrade_level + 1
 
@@ -276,7 +327,7 @@ def draw_upgrade_screen():
 
     upgrade_cards = [
         ("guns", "GUNS", "+20% damage", "Level " + str(gun_upgrade_level)),
-        ("shields", "SHIELDS", "+20% shield", str(int(shield_current)) + "/" + str(int(shield_max))),
+        ("shields", "SHIELDS", "+20 lives", "Level " + str(shield_upgrade_level)),
         ("engine", "ENGINE", "+15% move speed", "Level " + str(engine_upgrade_level)),
     ]
     mouse_pos = pygame.mouse.get_pos()
@@ -313,7 +364,7 @@ def make_pixel_sprite(rows, colors, scale):
             if pixel != ".":
                 sprite.set_at((x, y), colors[pixel])
 
-    return pygame.transform.scale(sprite, (width * scale, height * scale))
+    return pygame.transform.scale(sprite, (width * scale, height * scale)).convert_alpha()
 
 
 def fire_player_weapon():
@@ -846,16 +897,17 @@ player_x = 400
 player_y = 520
 player_velocity_x = 0
 player_velocity_y = 0
-player_acceleration = 0.6
+player_acceleration = 36
 player_friction = 0.86
-player_max_speed = 7
+player_max_speed = 420
 
 galaxy_distance = 26000.0
-minimum_black_hole_distance = 1 / 9461000000000
+minimum_black_hole_distance = CRASH_DISTANCE_KILOMETERS / LIGHT_YEAR_KILOMETERS
 max_galaxy_distance = 50000
 radial_speed_ly_per_second = -120.0
 orbit_speed_degrees_per_second = 35.0
 orbit_angle = -math.pi / 2
+black_hole_crash = False
 
 stars = []
 for i in range(140):
@@ -1170,14 +1222,15 @@ while running:
         lasers = new_lasers
 
         keys = pygame.key.get_pressed()
+        frame_scale = seconds_passed * 60
         if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-            player_velocity_x = player_velocity_x - player_acceleration
+            player_velocity_x = player_velocity_x - player_acceleration * frame_scale
         if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            player_velocity_x = player_velocity_x + player_acceleration
+            player_velocity_x = player_velocity_x + player_acceleration * frame_scale
         if keys[pygame.K_UP] or keys[pygame.K_w]:
-            player_velocity_y = player_velocity_y - player_acceleration
+            player_velocity_y = player_velocity_y - player_acceleration * frame_scale
         if keys[pygame.K_DOWN] or keys[pygame.K_s]:
-            player_velocity_y = player_velocity_y + player_acceleration
+            player_velocity_y = player_velocity_y + player_acceleration * frame_scale
 
         if keys[pygame.K_q]:
             radial_speed_ly_per_second = radial_speed_ly_per_second - 260 * seconds_passed
@@ -1193,18 +1246,25 @@ while running:
             orbit_speed_degrees_per_second = 0
 
         radial_speed_ly_per_second = max(-1200, min(1200, radial_speed_ly_per_second))
+        if galaxy_distance < 1 and radial_speed_ly_per_second < 0:
+            radial_speed_ly_per_second = max(radial_speed_ly_per_second, -get_close_center_speed_limit(galaxy_distance))
         orbit_speed_degrees_per_second = max(-180, min(180, orbit_speed_degrees_per_second))
         galaxy_distance = galaxy_distance + radial_speed_ly_per_second * seconds_passed
         galaxy_distance = max(minimum_black_hole_distance, min(max_galaxy_distance, galaxy_distance))
+        if galaxy_distance <= minimum_black_hole_distance and radial_speed_ly_per_second < 0:
+            black_hole_crash = True
+            screen_shake_timer = 35
+            screen_shake_strength = 14
+            running = False
         orbit_angle = orbit_angle + math.radians(orbit_speed_degrees_per_second) * seconds_passed
 
         current_player_max_speed = player_max_speed * get_engine_multiplier()
         player_velocity_x = max(-current_player_max_speed, min(current_player_max_speed, player_velocity_x))
         player_velocity_y = max(-current_player_max_speed, min(current_player_max_speed, player_velocity_y))
-        player_x = player_x + player_velocity_x
-        player_y = player_y + player_velocity_y
-        player_velocity_x = player_velocity_x * player_friction
-        player_velocity_y = player_velocity_y * player_friction
+        player_x = player_x + player_velocity_x * seconds_passed
+        player_y = player_y + player_velocity_y * seconds_passed
+        player_velocity_x = player_velocity_x * (player_friction ** frame_scale)
+        player_velocity_y = player_velocity_y * (player_friction ** frame_scale)
 
         player_half_width = player_sprite.get_width() // 2
         player_half_height = player_sprite.get_height() // 2
@@ -1330,7 +1390,7 @@ while running:
         draw_pause_play_button(paused)
 
     pygame.display.flip()
-    clock.tick(60)
+    clock.tick(TARGET_FPS)
 
 music_channel.stop()
 if score > high_score:
@@ -1375,7 +1435,12 @@ while game_over:
         screen.blit(yes_text, yes_text.get_rect(center=yes_button.center))
         screen.blit(no_text, no_text.get_rect(center=no_button.center))
     else:
-        end_title = "MISSION COMPLETE" if mission_complete else "GAME OVER"
+        if black_hole_crash:
+            end_title = "BLACK HOLE CRASH"
+        elif mission_complete:
+            end_title = "MISSION COMPLETE"
+        else:
+            end_title = "GAME OVER"
         over_text = big_64pixel_font.render(end_title, True, (255, 50, 50))
         screen.blit(over_text, (100, 100))
 
@@ -1392,5 +1457,5 @@ while game_over:
         screen.blit(quit_text, (100, 500))
 
     pygame.display.flip()
-    clock.tick(30)
+    clock.tick(TARGET_FPS)
 pygame.quit()
