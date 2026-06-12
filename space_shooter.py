@@ -1,8 +1,6 @@
 import pygame
 import random
 import math
-import os
-import sys
 from array import array
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +30,7 @@ pygame.init()
 BASE_DIR = Path(__file__).resolve().parent
 HIGH_SCORE_FILE = BASE_DIR / "highscore.txt"
 HIGH_SCORE_TIME_FILE = BASE_DIR / "highscore_time.txt"
+STATS_FILE = BASE_DIR / "stats.txt"
 pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=1)
 pygame.mixer.set_reserved(1)
 weapon_sounds = {
@@ -49,6 +48,10 @@ player_hit_sound = pygame.mixer.Sound(str(BASE_DIR / "player_hit.wav"))
 enemy_hit_sound.set_volume(0.35)
 powerup_collect_sound.set_volume(0.45)
 player_hit_sound.set_volume(0.45)
+graze_sound = make_music_loop([(1320, 0.03)], 0.4)
+milestone_sound = make_music_loop([(523, 0.05), (659, 0.05), (784, 0.10)], 0.5)
+warning_sound = make_music_loop([(196, 0.16), (0, 0.05), (196, 0.16)], 0.6)
+new_record_sound = make_music_loop([(440, 0.07), (554, 0.07), (659, 0.07), (880, 0.16)], 0.55)
 music_channel = pygame.mixer.Channel(0)
 music_channel.set_volume(0.32)
 current_music_name = ""
@@ -105,9 +108,93 @@ def save_high_score(value, score_time):
         f.write(score_time)
 
 
-def restart_game():
-    pygame.quit()
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+def load_stats():
+    stats = {"best_combo": 0, "total_kills": 0, "total_runs": 0, "total_boss_kills": 0}
+    try:
+        with open(STATS_FILE, "r") as f:
+            for line in f:
+                if "=" in line:
+                    key, value = line.strip().split("=", 1)
+                    if key in stats:
+                        stats[key] = int(value)
+    except (OSError, ValueError):
+        pass
+    return stats
+
+
+def save_stats():
+    with open(STATS_FILE, "w") as f:
+        for key, value in lifetime_stats.items():
+            f.write(key + "=" + str(value) + "\n")
+
+
+def reset_run():
+    global player_x, player_y, player_velocity_x, player_velocity_y
+    global galaxy_distance, radial_speed_ly_per_second, orbit_speed_degrees_per_second, orbit_angle, black_hole_crash
+    global lasers, fire_timer, powerups, powerup_timer, active_weapon, weapon_timer
+    global special_move_weapon, special_move_timer, enemies, spawn_timer, enemy_bullets
+    global particles, score_popups, shockwaves, screen_shake_timer, screen_shake_strength, player_hit_timer
+    global score, lives, current_stage, stage_score, boss, mission_complete
+    global gun_upgrade_level, shield_upgrade_level, engine_upgrade_level, shield_current, upgrade_screen, paused
+    global combo_count, combo_timer, score_multiplier, best_combo_this_run, milestone_flash_timer
+    global graze_count_this_run, graze_pulse_timer, graze_popup_cooldown
+    global wave_timer, boss_warning_timer, hitstop_timer, muzzle_flash_timer, high_score_beaten
+    global current_music_name, running
+
+    player_x = 400
+    player_y = 520
+    player_velocity_x = 0
+    player_velocity_y = 0
+    galaxy_distance = 26000.0
+    radial_speed_ly_per_second = -120.0
+    orbit_speed_degrees_per_second = 35.0
+    orbit_angle = -math.pi / 2
+    black_hole_crash = False
+    lasers = []
+    fire_timer = 0
+    powerups = []
+    powerup_timer = 0
+    active_weapon = "single"
+    weapon_timer = 0
+    special_move_weapon = ""
+    special_move_timer = 0
+    enemies = []
+    spawn_timer = 0
+    enemy_bullets = []
+    particles = []
+    score_popups = []
+    shockwaves = []
+    screen_shake_timer = 0
+    screen_shake_strength = 0
+    player_hit_timer = 0
+    score = 0
+    lives = 20
+    current_stage = 0
+    stage_score = 0
+    boss = None
+    mission_complete = False
+    gun_upgrade_level = 0
+    shield_upgrade_level = 0
+    engine_upgrade_level = 0
+    shield_current = shield_max
+    upgrade_screen = False
+    paused = False
+    combo_count = 0
+    combo_timer = 0
+    score_multiplier = 1
+    best_combo_this_run = 0
+    milestone_flash_timer = 0
+    graze_count_this_run = 0
+    graze_pulse_timer = 0
+    graze_popup_cooldown = 0
+    wave_timer = 0
+    boss_warning_timer = 0
+    hitstop_timer = 0
+    muzzle_flash_timer = 0
+    high_score_beaten = False
+    running = True
+    current_music_name = ""
+    play_music("stage_0", stage_music[0])
 
 
 def play_music(name, sound):
@@ -368,6 +455,9 @@ def make_pixel_sprite(rows, colors, scale):
 
 
 def fire_player_weapon():
+    global muzzle_flash_timer
+
+    muzzle_flash_timer = 3
     nose_y = player_y - player_sprite.get_height() // 2
 
     if active_weapon == "double":
@@ -398,8 +488,75 @@ def add_particles(x, y, color, count, speed, life, size):
         ])
 
 
-def add_score_popup(text, x, y, color):
-    score_popups.append([text, x, y, -1.2, 45, color])
+def add_score_popup(text, x, y, color, life=45):
+    score_popups.append([text, x, y, -1.2, life, color])
+
+
+def add_shockwave(x, y, max_radius, color):
+    shockwaves.append([x, y, 6, max_radius, color])
+
+
+def get_combo_multiplier(count):
+    if count >= 55:
+        return 6
+    if count >= 35:
+        return 5
+    if count >= 20:
+        return 4
+    if count >= 10:
+        return 3
+    if count >= 5:
+        return 2
+    return 1
+
+
+def bump_combo():
+    global combo_count, combo_timer, score_multiplier, best_combo_this_run
+    global milestone_flash_timer, hitstop_timer, screen_shake_timer, screen_shake_strength
+
+    combo_count = combo_count + 1
+    combo_timer = combo_window
+    best_combo_this_run = max(best_combo_this_run, combo_count)
+    new_multiplier = get_combo_multiplier(combo_count)
+    if new_multiplier > score_multiplier:
+        score_multiplier = new_multiplier
+        milestone_flash_timer = 8
+        hitstop_timer = max(hitstop_timer, 5)
+        screen_shake_timer = max(screen_shake_timer, 10)
+        screen_shake_strength = max(screen_shake_strength, 5)
+        add_score_popup("x" + str(new_multiplier) + " COMBO!", SCREEN_WIDTH // 2, 240, combo_tier_colors[new_multiplier], 60)
+        add_shockwave(player_x, player_y, 70, combo_tier_colors[new_multiplier])
+        milestone_sound.play()
+
+
+def register_kill(x, y, base_points):
+    global hitstop_timer, high_score_beaten, milestone_flash_timer, screen_shake_timer, screen_shake_strength
+
+    bump_combo()
+    hitstop_timer = max(hitstop_timer, 2)
+    lifetime_stats["total_kills"] = lifetime_stats["total_kills"] + 1
+    points = base_points * score_multiplier
+    if math.hypot(x - player_x, y - player_y) < 150:
+        points = points + base_points // 2
+        add_score_popup("CLOSE!", x, y - 34, (255, 160, 60))
+    if not high_score_beaten and high_score > 0 and score + points > high_score:
+        high_score_beaten = True
+        add_score_popup("NEW HIGH SCORE!", SCREEN_WIDTH // 2, 200, (255, 230, 80), 90)
+        new_record_sound.play()
+        milestone_flash_timer = 10
+        screen_shake_timer = max(screen_shake_timer, 12)
+        screen_shake_strength = max(screen_shake_strength, 6)
+    return points
+
+
+def break_combo():
+    global combo_count, combo_timer, score_multiplier
+
+    if combo_count >= 5:
+        add_score_popup("COMBO LOST", player_x, player_y - 40, (255, 90, 90))
+    combo_count = 0
+    combo_timer = 0
+    score_multiplier = 1
 
 
 def damage_player():
@@ -408,6 +565,7 @@ def damage_player():
     if player_hit_timer > 0:
         return
 
+    break_combo()
     if shield_current > 0:
         shield_current = max(0, shield_current - 35)
     else:
@@ -514,45 +672,58 @@ def fire_boss_attack(active_boss):
 
     if stage_index == 0 and timer % 42 == 0:
         for x_speed in [-3, -1, 1, 3]:
-            enemy_bullets.append([boss_x, boss_y + 55, x_speed, 4])
+            enemy_bullets.append([boss_x, boss_y + 55, x_speed, 4, 0])
     elif stage_index == 1 and timer % 28 == 0:
         for angle in range(25, 156, 26):
             x_speed = math.cos(math.radians(angle)) * 3.2
             y_speed = math.sin(math.radians(angle)) * 3.2
-            enemy_bullets.append([boss_x, boss_y + 20, x_speed, y_speed])
+            enemy_bullets.append([boss_x, boss_y + 20, x_speed, y_speed, 0])
     elif stage_index == 2:
         if timer % 38 == 0:
             for offset in [-52, 52]:
                 dx = player_x - (boss_x + offset)
                 dy = player_y - boss_y
                 distance = max(1, math.hypot(dx, dy))
-                enemy_bullets.append([boss_x + offset, boss_y + 34, dx / distance * 4, dy / distance * 4])
+                enemy_bullets.append([boss_x + offset, boss_y + 34, dx / distance * 4, dy / distance * 4, 0])
         if timer % 95 == 0:
             for x_speed in [-4, -2, 0, 2, 4]:
-                enemy_bullets.append([boss_x, boss_y + 60, x_speed, 5])
+                enemy_bullets.append([boss_x, boss_y + 60, x_speed, 5, 0])
     elif stage_index == 3:
         if timer % 16 == 0:
             lane_x = 90 + ((timer * 19) % (SCREEN_WIDTH - 180))
-            enemy_bullets.append([lane_x, boss_y + 44, 0, 5.5])
+            enemy_bullets.append([lane_x, boss_y + 44, 0, 5.5, 0])
         if timer % 70 == 0:
             for offset in [-70, 70]:
-                enemy_bullets.append([boss_x + offset, boss_y + 40, -offset / 22, 4.2])
+                enemy_bullets.append([boss_x + offset, boss_y + 40, -offset / 22, 4.2, 0])
     elif stage_index == 4:
         if timer % 11 == 0:
             angle = timer * 10
             for extra in [0, 180]:
                 x_speed = math.cos(math.radians(angle + extra)) * 3.5
                 y_speed = 2.8 + math.sin(math.radians(angle + extra)) * 1.2
-                enemy_bullets.append([boss_x, boss_y + 25, x_speed, y_speed])
+                enemy_bullets.append([boss_x, boss_y + 25, x_speed, y_speed, 0])
         if timer % 75 == 0:
             for x_speed in [-5, -2.5, 0, 2.5, 5]:
-                enemy_bullets.append([boss_x, boss_y + 58, x_speed, 4.8])
+                enemy_bullets.append([boss_x, boss_y + 58, x_speed, 4.8, 0])
 
 
 def update_boss():
-    global boss
+    global boss, screen_shake_timer, screen_shake_strength
 
     if boss is None:
+        return
+
+    if "dying" in boss:
+        boss["dying"] = boss["dying"] - 1
+        if boss["dying"] % 6 == 0:
+            blast_x = boss["x"] + random.randint(-60, 60)
+            blast_y = boss["y"] + random.randint(-40, 40)
+            add_particles(blast_x, blast_y, (255, 210, 90), 14, 5, 28, 4)
+            enemy_hit_sound.play()
+            screen_shake_timer = max(screen_shake_timer, 6)
+            screen_shake_strength = max(screen_shake_strength, 4)
+        if boss["dying"] <= 0:
+            finish_boss()
         return
 
     boss["timer"] = boss["timer"] + 1
@@ -583,7 +754,7 @@ def damage_boss(laser):
 
     damage = get_laser_damage(laser)
     boss["hp"] = boss["hp"] - damage
-    score = score + 2
+    score = score + 2 * score_multiplier
     stage_score = stage_score + 2
     enemy_hit_sound.play()
     add_particles(laser[0], laser[1], powerup_colors.get(laser[4], (255, 220, 60)), 8, 3, 18, 3)
@@ -596,9 +767,14 @@ def finish_boss():
     global enemies, enemy_bullets, particles, score
 
     defeated_boss = stages[current_stage]["boss"]
+    boss_bonus = 300 + current_stage * 100
     add_particles(boss["x"], boss["y"], (255, 210, 90), 80, 8, 60, 6)
-    add_score_popup(defeated_boss + " DOWN", boss["x"], boss["y"], (255, 230, 120))
-    score = score + 300 + current_stage * 100
+    add_shockwave(boss["x"], boss["y"], 160, (255, 210, 90))
+    add_shockwave(boss["x"], boss["y"], 110, (255, 255, 255))
+    add_score_popup(defeated_boss + " DOWN", boss["x"], boss["y"], (255, 230, 120), 75)
+    add_score_popup("+" + str(boss_bonus), boss["x"], boss["y"] + 34, (255, 230, 120), 75)
+    lifetime_stats["total_boss_kills"] = lifetime_stats["total_boss_kills"] + 1
+    score = score + boss_bonus
     stage_score = 0
     current_stage = current_stage + 1
     boss = None
@@ -752,6 +928,27 @@ enemy_sprites = [
             "V": (185, 55, 230),
             "H": (255, 78, 92),
             "L": (255, 164, 38),
+        },
+        3,
+    ),
+    make_pixel_sprite(
+        [
+            "....OO....",
+            ".O.OKKO.O.",
+            "..OKWWKO..",
+            ".OKWAAWKO.",
+            "OKWAAAAWKO",
+            "OKWAAAAWKO",
+            ".OKWAAWKO.",
+            "..OKWWKO..",
+            ".O.OKKO.O.",
+            "....OO....",
+        ],
+        {
+            "O": (255, 150, 40),
+            "K": (35, 28, 30),
+            "W": (255, 220, 120),
+            "A": (255, 70, 30),
         },
         3,
     ),
@@ -962,9 +1159,35 @@ enemy_bullet_speed = 4
 
 particles = []
 score_popups = []
+shockwaves = []
 screen_shake_timer = 0
 screen_shake_strength = 0
 player_hit_timer = 0
+hitstop_timer = 0
+muzzle_flash_timer = 0
+
+combo_count = 0
+combo_timer = 0
+combo_window = 150
+score_multiplier = 1
+best_combo_this_run = 0
+milestone_flash_timer = 0
+combo_tier_colors = {
+    1: (235, 245, 255),
+    2: (255, 220, 80),
+    3: (255, 140, 60),
+    4: (255, 70, 160),
+    5: (160, 90, 255),
+    6: (90, 230, 255),
+}
+graze_count_this_run = 0
+graze_pulse_timer = 0
+graze_popup_cooldown = 0
+wave_timer = 0
+boss_warning_timer = 0
+high_score_beaten = False
+enemy_kill_points = [10, 10, 25, 20]
+lifetime_stats = load_stats()
 
 score = 0
 high_score = load_high_score()
@@ -994,468 +1217,638 @@ upgrade_buttons = {
     "engine": pygame.Rect(530, 400, 200, 145),
 }
 play_music("stage_0", stage_music[0])
-while running:
+app_running = True
+while app_running:
+    while running:
 
-    # --- CHECK / EVENTS ---
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        if upgrade_screen and event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_1:
-                apply_upgrade("guns")
-            elif event.key == pygame.K_2:
-                apply_upgrade("shields")
-            elif event.key == pygame.K_3:
-                apply_upgrade("engine")
-        elif upgrade_screen and event.type == pygame.MOUSEBUTTONDOWN:
-            for upgrade_name, button_rect in upgrade_buttons.items():
-                if button_rect.collidepoint(event.pos):
-                    apply_upgrade(upgrade_name)
-        elif event.type == pygame.KEYDOWN and event.key == pygame.K_p:
-            toggle_pause()
-        elif event.type == pygame.MOUSEBUTTONDOWN and pause_button.collidepoint(event.pos):
-            toggle_pause()
+        # --- CHECK / EVENTS ---
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            if upgrade_screen and event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_1:
+                    apply_upgrade("guns")
+                elif event.key == pygame.K_2:
+                    apply_upgrade("shields")
+                elif event.key == pygame.K_3:
+                    apply_upgrade("engine")
+            elif upgrade_screen and event.type == pygame.MOUSEBUTTONDOWN:
+                for upgrade_name, button_rect in upgrade_buttons.items():
+                    if button_rect.collidepoint(event.pos):
+                        apply_upgrade(upgrade_name)
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_p:
+                toggle_pause()
+            elif event.type == pygame.MOUSEBUTTONDOWN and pause_button.collidepoint(event.pos):
+                toggle_pause()
 
-    # --- UPDATE ---
-    if not paused and not upgrade_screen:
-        seconds_passed = clock.get_time() / 1000
-        stage = stages[current_stage]
-        current_spawn_delay = stage["spawn_delay"]
-        enemies_per_spawn = 1 + min(current_stage // 2, 2)
-        current_enemy_speed = enemy_speed + stage["speed"]
-        current_enemy_bullet_speed = enemy_bullet_speed + min(current_stage, 3)
-        enemy_fire_roll = stage["fire_roll"]
+        # --- UPDATE ---
+        if hitstop_timer > 0 and not paused and not upgrade_screen:
+            hitstop_timer = hitstop_timer - 1
+        elif not paused and not upgrade_screen:
+            seconds_passed = clock.get_time() / 1000
+            stage = stages[current_stage]
+            if boss is None and boss_warning_timer == 0:
+                wave_timer = (wave_timer + 1) % 900
+            in_lull = boss is None and boss_warning_timer == 0 and 600 <= wave_timer < 760
+            if wave_timer < 600:
+                current_spawn_delay = max(12, int(stage["spawn_delay"] * 0.72))
+            else:
+                current_spawn_delay = stage["spawn_delay"]
+            enemies_per_spawn = 1 + min(current_stage // 2, 2)
+            current_enemy_speed = enemy_speed + stage["speed"]
+            current_enemy_bullet_speed = enemy_bullet_speed + min(current_stage, 3)
+            enemy_fire_roll = stage["fire_roll"]
 
-        if weapon_timer > 0:
-            weapon_timer = weapon_timer - 1
-        elif active_weapon != "single":
-            active_weapon = "single"
+            if weapon_timer > 0:
+                weapon_timer = weapon_timer - 1
+            elif active_weapon != "single":
+                active_weapon = "single"
 
-        if player_hit_timer > 0:
-            player_hit_timer = player_hit_timer - 1
-        if screen_shake_timer > 0:
-            screen_shake_timer = screen_shake_timer - 1
-        if special_move_timer > 0:
-            special_move_timer = special_move_timer - 1
+            if player_hit_timer > 0:
+                player_hit_timer = player_hit_timer - 1
+            if screen_shake_timer > 0:
+                screen_shake_timer = screen_shake_timer - 1
+            if special_move_timer > 0:
+                special_move_timer = special_move_timer - 1
+            if milestone_flash_timer > 0:
+                milestone_flash_timer = milestone_flash_timer - 1
+            if muzzle_flash_timer > 0:
+                muzzle_flash_timer = muzzle_flash_timer - 1
+            if graze_pulse_timer > 0:
+                graze_pulse_timer = graze_pulse_timer - 1
+            if graze_popup_cooldown > 0:
+                graze_popup_cooldown = graze_popup_cooldown - 1
+            if combo_timer > 0:
+                combo_timer = combo_timer - 1
+                if combo_timer == 0:
+                    break_combo()
 
-        current_fire_delay = 5 if active_weapon == "rapid" else fire_delay
+            current_fire_delay = 5 if active_weapon == "rapid" else fire_delay
 
-        fire_timer = fire_timer + 1
-        if fire_timer >= current_fire_delay:
-            fire_player_weapon()
-            fire_timer = 0
+            fire_timer = fire_timer + 1
+            if fire_timer >= current_fire_delay:
+                fire_player_weapon()
+                fire_timer = 0
 
-        for star in stars:
-            star[1] = star[1] + star[2]
-            if star[1] > SCREEN_HEIGHT:
-                star[1] = 0
-                star[0] = random.randint(0, SCREEN_WIDTH)
+            for star in stars:
+                star[1] = star[1] + star[2]
+                if star[1] > SCREEN_HEIGHT:
+                    star[1] = 0
+                    star[0] = random.randint(0, SCREEN_WIDTH)
 
-        powerup_timer = powerup_timer + 1
-        if powerup_timer >= powerup_spawn_delay:
-            powerup_x = random.randint(40, SCREEN_WIDTH - 40)
-            powerup_type = random.choice(weapon_types)
-            powerups.append([powerup_x, -25, powerup_type])
-            powerup_timer = 0
+            powerup_timer = powerup_timer + 1
+            if powerup_timer >= powerup_spawn_delay:
+                powerup_x = random.randint(40, SCREEN_WIDTH - 40)
+                powerup_type = random.choice(weapon_types)
+                powerups.append([powerup_x, -25, powerup_type])
+                powerup_timer = 0
 
-        new_powerups = []
-        for powerup in powerups:
-            powerup[1] = powerup[1] + powerup_speed
-            if powerup[1] < SCREEN_HEIGHT + 30:
-                new_powerups.append(powerup)
-        powerups = new_powerups
+            new_powerups = []
+            for powerup in powerups:
+                powerup[1] = powerup[1] + powerup_speed
+                if powerup[1] < SCREEN_HEIGHT + 30:
+                    new_powerups.append(powerup)
+            powerups = new_powerups
 
-        if boss is None and stage_score >= stage["goal"]:
-            spawn_boss()
-        elif boss is None:
-            spawn_timer = spawn_timer + 1
-            if spawn_timer >= current_spawn_delay:
-                for i in range(enemies_per_spawn):
-                    enemy_x = random.randint(30, SCREEN_WIDTH - 30)
-                    enemy_y = -30 - i * 45
-                    enemy_type = random.randint(0, len(enemy_sprites) - 1)
-                    enemy_hp = 5 + current_stage * 2
-                    enemies.append([enemy_x, enemy_y, enemy_type, enemy_hp])
-                spawn_timer = 0
+            if boss is None and boss_warning_timer > 0:
+                boss_warning_timer = boss_warning_timer - 1
+                if boss_warning_timer == 90:
+                    warning_sound.play()
+                if boss_warning_timer == 0:
+                    spawn_boss()
+            elif boss is None and stage_score >= stage["goal"]:
+                boss_warning_timer = 180
+                warning_sound.play()
+            elif boss is None and not in_lull:
+                spawn_timer = spawn_timer + 1
+                if spawn_timer >= current_spawn_delay:
+                    for i in range(enemies_per_spawn):
+                        enemy_x = random.randint(30, SCREEN_WIDTH - 30)
+                        enemy_y = -30 - i * 45
+                        if current_stage == 0:
+                            enemy_type = random.randint(0, 1)
+                        elif random.random() < 0.13:
+                            enemy_type = 3
+                        else:
+                            enemy_type = random.randint(0, 2)
+                        enemy_hp = 5 + current_stage * 2
+                        if enemy_type == 2:
+                            enemy_hp = enemy_hp * 3
+                        elif enemy_type == 3:
+                            enemy_hp = 3
+                        enemies.append([enemy_x, enemy_y, enemy_type, enemy_hp, 0, random.randint(0, 60), 0])
+                    spawn_timer = 0
 
-        update_boss()
+            update_boss()
 
-        new_enemies = []
-        for enemy in enemies:
-            enemy[1] = enemy[1] + current_enemy_speed
-            if enemy[1] > 20 and random.randint(1, enemy_fire_roll) == 1:
-                enemy_sprite = enemy_sprites[enemy[2]]
-                bullet_y = enemy[1] + enemy_sprite.get_height() // 2
-                bullet_x_speed = random.choice([-3, -2, -1, 0, 1, 2, 3])
-                enemy_bullets.append([enemy[0], bullet_y, bullet_x_speed, current_enemy_bullet_speed])
-            if enemy[1] < SCREEN_HEIGHT + 40:
-                new_enemies.append(enemy)
-        enemies = new_enemies
+            new_enemies = []
+            for enemy in enemies:
+                enemy[5] = enemy[5] + 1
+                if enemy[2] == 0:
+                    if enemy[6] == 0 and enemy[1] > 130 and abs(enemy[0] - player_x) < 90:
+                        enemy[6] = 1
+                        enemy[4] = max(-4, min(4, (player_x - enemy[0]) / 40))
+                    if enemy[6] == 1:
+                        enemy[0] = enemy[0] + enemy[4]
+                        enemy[1] = enemy[1] + current_enemy_speed * 2.6
+                        add_particles(enemy[0], enemy[1] - 14, (255, 150, 50), 2, 1, 10, 2)
+                    else:
+                        enemy[1] = enemy[1] + current_enemy_speed
+                elif enemy[2] == 1:
+                    enemy[0] = enemy[0] + math.sin(enemy[5] / 16) * 2.6
+                    enemy[1] = enemy[1] + current_enemy_speed
+                elif enemy[2] == 2:
+                    enemy[1] = enemy[1] + current_enemy_speed * 0.55
+                else:
+                    if player_x > enemy[0]:
+                        enemy[4] = min(3.5, enemy[4] + 0.18)
+                    else:
+                        enemy[4] = max(-3.5, enemy[4] - 0.18)
+                    enemy[0] = enemy[0] + enemy[4]
+                    enemy[1] = enemy[1] + current_enemy_speed * 1.7
 
-        new_enemy_bullets = []
-        for bullet in enemy_bullets:
-            bullet[0] = bullet[0] + bullet[2]
-            bullet[1] = bullet[1] + bullet[3]
-            if -20 < bullet[0] < SCREEN_WIDTH + 20 and bullet[1] < SCREEN_HEIGHT + 20:
-                new_enemy_bullets.append(bullet)
-        enemy_bullets = new_enemy_bullets
+                if enemy[1] > 20:
+                    bullet_y = enemy[1] + enemy_sprites[enemy[2]].get_height() // 2
+                    if enemy[2] == 1 and random.randint(1, enemy_fire_roll + 40) == 1:
+                        aim_x = player_x - enemy[0]
+                        aim_y = player_y - bullet_y
+                        aim_distance = max(1, math.hypot(aim_x, aim_y))
+                        enemy_bullets.append([enemy[0], bullet_y, aim_x / aim_distance * current_enemy_bullet_speed, aim_y / aim_distance * current_enemy_bullet_speed, 0])
+                    elif enemy[2] == 2 and random.randint(1, enemy_fire_roll) == 1:
+                        enemy_bullets.append([enemy[0], bullet_y, -1.5, current_enemy_bullet_speed, 0])
+                        enemy_bullets.append([enemy[0], bullet_y, 1.5, current_enemy_bullet_speed, 0])
+                    elif enemy[2] == 0 and enemy[6] == 0 and random.randint(1, enemy_fire_roll) == 1:
+                        bullet_x_speed = random.choice([-3, -2, -1, 0, 1, 2, 3])
+                        enemy_bullets.append([enemy[0], bullet_y, bullet_x_speed, current_enemy_bullet_speed, 0])
+                if enemy[1] < SCREEN_HEIGHT + 40 and -60 < enemy[0] < SCREEN_WIDTH + 60:
+                    new_enemies.append(enemy)
+            enemies = new_enemies
 
-        new_particles = []
-        for particle in particles:
-            particle[0] = particle[0] + particle[2]
-            particle[1] = particle[1] + particle[3]
-            particle[3] = particle[3] + 0.12
-            particle[4] = particle[4] - 1
-            if particle[4] > 0:
-                new_particles.append(particle)
-        particles = new_particles
+            new_enemy_bullets = []
+            for bullet in enemy_bullets:
+                bullet[0] = bullet[0] + bullet[2]
+                bullet[1] = bullet[1] + bullet[3]
+                if -20 < bullet[0] < SCREEN_WIDTH + 20 and bullet[1] < SCREEN_HEIGHT + 20:
+                    new_enemy_bullets.append(bullet)
+            enemy_bullets = new_enemy_bullets
 
-        new_score_popups = []
-        for popup in score_popups:
-            popup[1] = popup[1] + random.uniform(-0.2, 0.2)
-            popup[2] = popup[2] + popup[3]
-            popup[4] = popup[4] - 1
-            if popup[4] > 0:
-                new_score_popups.append(popup)
-        score_popups = new_score_popups
+            new_particles = []
+            for particle in particles:
+                particle[0] = particle[0] + particle[2]
+                particle[1] = particle[1] + particle[3]
+                particle[3] = particle[3] + 0.12
+                particle[4] = particle[4] - 1
+                if particle[4] > 0:
+                    new_particles.append(particle)
+            particles = new_particles
 
-        surviving_lasers = []
-        for laser in lasers:
-            laser_width = 12 if laser[4] == "heavy" else 4
-            laser_rect = pygame.Rect(laser[0] - laser_width // 2, laser[1], laser_width, 18)
-            hit_something = False
+            new_shockwaves = []
+            for shockwave in shockwaves:
+                shockwave[2] = shockwave[2] + 7
+                if shockwave[2] < shockwave[3]:
+                    new_shockwaves.append(shockwave)
+            shockwaves = new_shockwaves
+
+            new_score_popups = []
+            for popup in score_popups:
+                popup[1] = popup[1] + random.uniform(-0.2, 0.2)
+                popup[2] = popup[2] + popup[3]
+                popup[4] = popup[4] - 1
+                if popup[4] > 0:
+                    new_score_popups.append(popup)
+            score_popups = new_score_popups
+
+            surviving_lasers = []
+            for laser in lasers:
+                laser_width = 12 if laser[4] == "heavy" else 4
+                laser_rect = pygame.Rect(laser[0] - laser_width // 2, laser[1], laser_width, 18)
+                hit_something = False
+
+                surviving_enemies = []
+                for enemy in enemies:
+                    enemy_sprite = enemy_sprites[enemy[2]]
+                    enemy_rect = enemy_sprite.get_rect(center=(enemy[0], enemy[1])).inflate(-8, -8)
+                    if laser_rect.colliderect(enemy_rect):
+                        hit_something = True
+                        enemy[3] = enemy[3] - get_laser_damage(laser)
+                        if enemy[3] <= 0:
+                            base_points = enemy_kill_points[enemy[2]]
+                            if laser[4] == "heavy":
+                                base_points = int(base_points * 1.5)
+                            points = register_kill(enemy[0], enemy[1], base_points)
+                            score = score + points
+                            stage_score = stage_score + base_points
+                            enemy_hit_sound.play()
+                            add_particles(enemy[0], enemy[1], powerup_colors.get(laser[4], (255, 220, 60)), 24, 4, 32, 4)
+                            add_particles(enemy[0], enemy[1], (255, 130, 55), 10, 5, 24, 3)
+                            add_shockwave(enemy[0], enemy[1], 34, powerup_colors.get(laser[4], (255, 220, 60)))
+                            add_score_popup("+" + str(points), enemy[0], enemy[1] - 12, powerup_colors.get(laser[4], (255, 255, 255)))
+                            screen_shake_timer = max(screen_shake_timer, 6)
+                            screen_shake_strength = max(screen_shake_strength, 3)
+                        else:
+                            add_particles(enemy[0], enemy[1], powerup_colors.get(laser[4], (255, 220, 60)), 6, 2, 12, 2)
+                            surviving_enemies.append(enemy)
+                    else:
+                        surviving_enemies.append(enemy)
+                enemies = surviving_enemies
+
+                if boss is not None and "dying" not in boss:
+                    boss_sprite = boss_sprites[boss["stage"]]
+                    boss_rect = boss_sprite.get_rect(center=(boss["x"], boss["y"])).inflate(-14, -10)
+                    if laser_rect.colliderect(boss_rect):
+                        hit_something = True
+                        damage_boss(laser)
+                        if boss["hp"] <= 0:
+                            boss["dying"] = 75
+                            hitstop_timer = max(hitstop_timer, 14)
+                            add_shockwave(boss["x"], boss["y"], 160, (255, 210, 90))
+
+                if not hit_something or laser[4] == "heavy":
+                    surviving_lasers.append(laser)
+            lasers = surviving_lasers
+
+            player_rect = player_sprite.get_rect(center=(player_x, player_y)).inflate(-10, -6)
+
+            surviving_powerups = []
+            for powerup in powerups:
+                powerup_rect = pygame.Rect(powerup[0] - 15, powerup[1] - 15, 30, 30)
+                if player_rect.colliderect(powerup_rect):
+                    active_weapon = powerup[2]
+                    weapon_timer = weapon_duration
+                    fire_timer = current_fire_delay
+                    special_move_weapon = active_weapon
+                    special_move_timer = special_move_duration
+                    powerup_collect_sound.play()
+                    add_particles(powerup[0], powerup[1], powerup_colors[active_weapon], 28, 4, 36, 4)
+                    add_score_popup(active_weapon.upper(), powerup[0], powerup[1] - 18, powerup_colors[active_weapon])
+                    screen_shake_timer = max(screen_shake_timer, 8)
+                    screen_shake_strength = max(screen_shake_strength, 4)
+                else:
+                    surviving_powerups.append(powerup)
+            powerups = surviving_powerups
 
             surviving_enemies = []
             for enemy in enemies:
                 enemy_sprite = enemy_sprites[enemy[2]]
                 enemy_rect = enemy_sprite.get_rect(center=(enemy[0], enemy[1])).inflate(-8, -8)
-                if laser_rect.colliderect(enemy_rect):
-                    hit_something = True
-                    enemy[3] = enemy[3] - get_laser_damage(laser)
-                    if enemy[3] <= 0:
-                        points = 15 if laser[4] == "heavy" else 10
-                        score = score + points
-                        stage_score = stage_score + points
-                        enemy_hit_sound.play()
-                        add_particles(enemy[0], enemy[1], powerup_colors.get(laser[4], (255, 220, 60)), 24, 4, 32, 4)
-                        add_particles(enemy[0], enemy[1], (255, 130, 55), 10, 5, 24, 3)
-                        add_score_popup("+" + str(points), enemy[0], enemy[1] - 12, powerup_colors.get(laser[4], (255, 255, 255)))
-                        screen_shake_timer = max(screen_shake_timer, 6)
-                        screen_shake_strength = max(screen_shake_strength, 3)
-                    else:
-                        add_particles(enemy[0], enemy[1], powerup_colors.get(laser[4], (255, 220, 60)), 6, 2, 12, 2)
-                        surviving_enemies.append(enemy)
+                if player_rect.colliderect(enemy_rect):
+                    damage_player()
+                    add_particles(enemy[0], enemy[1], (255, 120, 60), 20, 5, 28, 4)
                 else:
                     surviving_enemies.append(enemy)
             enemies = surviving_enemies
 
-            if boss is not None:
+            if boss is not None and "dying" not in boss:
                 boss_sprite = boss_sprites[boss["stage"]]
-                boss_rect = boss_sprite.get_rect(center=(boss["x"], boss["y"])).inflate(-14, -10)
-                if laser_rect.colliderect(boss_rect):
-                    hit_something = True
-                    damage_boss(laser)
-                    if boss is not None and boss["hp"] <= 0:
-                        finish_boss()
+                boss_rect = boss_sprite.get_rect(center=(boss["x"], boss["y"])).inflate(-20, -12)
+                if player_rect.colliderect(boss_rect):
+                    damage_player()
+                    add_particles(player_x, player_y, (255, 100, 120), 24, 5, 28, 4)
 
-            if not hit_something or laser[4] == "heavy":
-                surviving_lasers.append(laser)
-        lasers = surviving_lasers
+            graze_rect = player_rect.inflate(34, 34)
+            surviving_enemy_bullets = []
+            for bullet in enemy_bullets:
+                bullet_rect = pygame.Rect(bullet[0] - 3, bullet[1], 6, 14)
+                if player_rect.colliderect(bullet_rect):
+                    damage_player()
+                    add_particles(bullet[0], bullet[1], (255, 90, 120), 12, 4, 24, 3)
+                else:
+                    if bullet[4] == 0 and player_hit_timer == 0 and graze_rect.colliderect(bullet_rect):
+                        bullet[4] = 1
+                        graze_count_this_run = graze_count_this_run + 1
+                        score = score + 2 * score_multiplier
+                        combo_timer = max(combo_timer, 90)
+                        if graze_count_this_run % 3 == 0:
+                            bump_combo()
+                        graze_pulse_timer = 6
+                        add_particles(bullet[0], bullet[1], (120, 230, 255), 4, 2, 14, 2)
+                        if graze_popup_cooldown == 0:
+                            add_score_popup("GRAZE +" + str(2 * score_multiplier), player_x, player_y - 44, (120, 230, 255))
+                            graze_sound.play()
+                            graze_popup_cooldown = 20
+                    surviving_enemy_bullets.append(bullet)
+            enemy_bullets = surviving_enemy_bullets
 
-        player_rect = player_sprite.get_rect(center=(player_x, player_y)).inflate(-10, -6)
+            if lives <= 0: # 0 because we start with 10 lives so 10 trials for the whole game
+                running = False
 
-        surviving_powerups = []
-        for powerup in powerups:
-            powerup_rect = pygame.Rect(powerup[0] - 15, powerup[1] - 15, 30, 30)
-            if player_rect.colliderect(powerup_rect):
-                active_weapon = powerup[2]
-                weapon_timer = weapon_duration
-                fire_timer = current_fire_delay
-                special_move_weapon = active_weapon
-                special_move_timer = special_move_duration
-                powerup_collect_sound.play()
-                add_particles(powerup[0], powerup[1], powerup_colors[active_weapon], 28, 4, 36, 4)
-                add_score_popup(active_weapon.upper(), powerup[0], powerup[1] - 18, powerup_colors[active_weapon])
-                screen_shake_timer = max(screen_shake_timer, 8)
-                screen_shake_strength = max(screen_shake_strength, 4)
-            else:
-                surviving_powerups.append(powerup)
-        powerups = surviving_powerups
+            new_lasers = []
+            for laser in lasers:
+                laser[0] = laser[0] + laser[2]
+                laser[1] = laser[1] + laser[3]
+                if -20 < laser[0] < SCREEN_WIDTH + 20 and laser[1] > -30:
+                    new_lasers.append(laser)
+            lasers = new_lasers
 
-        surviving_enemies = []
+            keys = pygame.key.get_pressed()
+            frame_scale = seconds_passed * 60
+            if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+                player_velocity_x = player_velocity_x - player_acceleration * frame_scale
+            if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+                player_velocity_x = player_velocity_x + player_acceleration * frame_scale
+            if keys[pygame.K_UP] or keys[pygame.K_w]:
+                player_velocity_y = player_velocity_y - player_acceleration * frame_scale
+            if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+                player_velocity_y = player_velocity_y + player_acceleration * frame_scale
+
+            if keys[pygame.K_q]:
+                radial_speed_ly_per_second = radial_speed_ly_per_second - 260 * seconds_passed
+            if keys[pygame.K_e]:
+                radial_speed_ly_per_second = radial_speed_ly_per_second + 260 * seconds_passed
+            if keys[pygame.K_r]:
+                radial_speed_ly_per_second = 0
+            if keys[pygame.K_z]:
+                orbit_speed_degrees_per_second = orbit_speed_degrees_per_second - 80 * seconds_passed
+            if keys[pygame.K_x]:
+                orbit_speed_degrees_per_second = orbit_speed_degrees_per_second + 80 * seconds_passed
+            if keys[pygame.K_c]:
+                orbit_speed_degrees_per_second = 0
+
+            radial_speed_ly_per_second = max(-1200, min(1200, radial_speed_ly_per_second))
+            if galaxy_distance < 1 and radial_speed_ly_per_second < 0:
+                radial_speed_ly_per_second = max(radial_speed_ly_per_second, -get_close_center_speed_limit(galaxy_distance))
+            orbit_speed_degrees_per_second = max(-180, min(180, orbit_speed_degrees_per_second))
+            galaxy_distance = galaxy_distance + radial_speed_ly_per_second * seconds_passed
+            galaxy_distance = max(minimum_black_hole_distance, min(max_galaxy_distance, galaxy_distance))
+            if galaxy_distance <= minimum_black_hole_distance and radial_speed_ly_per_second < 0:
+                black_hole_crash = True
+                screen_shake_timer = 35
+                screen_shake_strength = 14
+                running = False
+            orbit_angle = orbit_angle + math.radians(orbit_speed_degrees_per_second) * seconds_passed
+
+            current_player_max_speed = player_max_speed * get_engine_multiplier()
+            player_velocity_x = max(-current_player_max_speed, min(current_player_max_speed, player_velocity_x))
+            player_velocity_y = max(-current_player_max_speed, min(current_player_max_speed, player_velocity_y))
+            player_x = player_x + player_velocity_x * seconds_passed
+            player_y = player_y + player_velocity_y * seconds_passed
+            player_velocity_x = player_velocity_x * (player_friction ** frame_scale)
+            player_velocity_y = player_velocity_y * (player_friction ** frame_scale)
+
+            player_half_width = player_sprite.get_width() // 2
+            player_half_height = player_sprite.get_height() // 2
+            if player_x < player_half_width:
+                player_x = player_half_width
+                player_velocity_x = 0
+            if player_x > SCREEN_WIDTH - player_half_width:
+                player_x = SCREEN_WIDTH - player_half_width
+                player_velocity_x = 0
+            if player_y < 90:
+                player_y = 90
+                player_velocity_y = 0
+            if player_y > SCREEN_HEIGHT - player_half_height:
+                player_y = SCREEN_HEIGHT - player_half_height
+                player_velocity_y = 0
+
+        # --- DRAW ---
+        draw_stage_background(current_stage)
+        world_offset_x = 0
+        world_offset_y = 0
+        if screen_shake_timer > 0 and not paused:
+            world_offset_x = random.randint(-screen_shake_strength, screen_shake_strength)
+            world_offset_y = random.randint(-screen_shake_strength, screen_shake_strength)
+
+        for star in stars:
+            pygame.draw.circle(screen, star[4], (int(star[0] + world_offset_x), int(star[1] + world_offset_y)), star[3])
+
+        for laser in lasers:
+            laser_color = powerup_colors.get(laser[4], (255, 255, 0))
+            laser_width = 9 if laser[4] == "heavy" else 5
+            laser_start = (laser[0] + world_offset_x, laser[1] + world_offset_y)
+            laser_end = (laser[0] + laser[2] * 4 + world_offset_x, laser[1] - 18 + world_offset_y)
+            pygame.draw.line(screen, (255, 255, 255), laser_start, laser_end, laser_width + 3)
+            pygame.draw.line(screen, laser_color, laser_start, laser_end, laser_width)
+
+        for bullet in enemy_bullets:
+            bullet_start = (bullet[0] + world_offset_x, bullet[1] + world_offset_y)
+            bullet_end = (bullet[0] + bullet[2] * 3 + world_offset_x, bullet[1] + 14 + world_offset_y)
+            pygame.draw.line(screen, (255, 60, 90), bullet_start, bullet_end, 8)
+            pygame.draw.line(screen, (255, 190, 210), bullet_start, bullet_end, 3)
+
         for enemy in enemies:
             enemy_sprite = enemy_sprites[enemy[2]]
-            enemy_rect = enemy_sprite.get_rect(center=(enemy[0], enemy[1])).inflate(-8, -8)
-            if player_rect.colliderect(enemy_rect):
-                damage_player()
-                add_particles(enemy[0], enemy[1], (255, 120, 60), 20, 5, 28, 4)
-            else:
-                surviving_enemies.append(enemy)
-        enemies = surviving_enemies
+            enemy_rect = enemy_sprite.get_rect(center=(enemy[0] + world_offset_x, enemy[1] + world_offset_y))
+            screen.blit(enemy_sprite, enemy_rect)
+            if enemy[2] == 3 and enemy[5] % 16 < 8:
+                flash_sprite = enemy_sprite.copy()
+                flash_sprite.fill((255, 60, 60, 130), special_flags=pygame.BLEND_RGBA_ADD)
+                screen.blit(flash_sprite, enemy_rect)
 
-        if boss is not None:
-            boss_sprite = boss_sprites[boss["stage"]]
-            boss_rect = boss_sprite.get_rect(center=(boss["x"], boss["y"])).inflate(-20, -12)
-            if player_rect.colliderect(boss_rect):
-                damage_player()
-                add_particles(player_x, player_y, (255, 100, 120), 24, 5, 28, 4)
+        draw_boss()
 
-        surviving_enemy_bullets = []
-        for bullet in enemy_bullets:
-            bullet_rect = pygame.Rect(bullet[0] - 3, bullet[1], 6, 14)
-            if player_rect.colliderect(bullet_rect):
-                damage_player()
-                add_particles(bullet[0], bullet[1], (255, 90, 120), 12, 4, 24, 3)
-            else:
-                surviving_enemy_bullets.append(bullet)
-        enemy_bullets = surviving_enemy_bullets
+        for powerup in powerups:
+            powerup_color = powerup_colors[powerup[2]]
+            pulse = 16 + int(math.sin(pygame.time.get_ticks() / 120) * 3)
+            powerup_points = [
+                (powerup[0] + world_offset_x, powerup[1] - pulse + world_offset_y),
+                (powerup[0] + pulse + world_offset_x, powerup[1] + world_offset_y),
+                (powerup[0] + world_offset_x, powerup[1] + pulse + world_offset_y),
+                (powerup[0] - pulse + world_offset_x, powerup[1] + world_offset_y),
+            ]
+            pygame.draw.polygon(screen, powerup_color, powerup_points)
+            pygame.draw.polygon(screen, (255, 255, 255), powerup_points, 2)
+            powerup_text = font.render(powerup_labels[powerup[2]], True, (10, 10, 20))
+            powerup_text_rect = powerup_text.get_rect(center=(powerup[0] + world_offset_x, powerup[1] + world_offset_y))
+            screen.blit(powerup_text, powerup_text_rect)
 
-        if lives <= 0: # 0 because we start with 10 lives so 10 trials for the whole game
-            running = False
+        for particle in particles:
+            pygame.draw.circle(
+                screen,
+                particle[5],
+                (int(particle[0] + world_offset_x), int(particle[1] + world_offset_y)),
+                particle[6],
+            )
 
-        new_lasers = []
-        for laser in lasers:
-            laser[0] = laser[0] + laser[2]
-            laser[1] = laser[1] + laser[3]
-            if -20 < laser[0] < SCREEN_WIDTH + 20 and laser[1] > -30:
-                new_lasers.append(laser)
-        lasers = new_lasers
+        for shockwave in shockwaves:
+            pygame.draw.circle(screen, shockwave[4], (int(shockwave[0] + world_offset_x), int(shockwave[1] + world_offset_y)), int(shockwave[2]), 3)
 
-        keys = pygame.key.get_pressed()
-        frame_scale = seconds_passed * 60
-        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-            player_velocity_x = player_velocity_x - player_acceleration * frame_scale
-        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            player_velocity_x = player_velocity_x + player_acceleration * frame_scale
-        if keys[pygame.K_UP] or keys[pygame.K_w]:
-            player_velocity_y = player_velocity_y - player_acceleration * frame_scale
-        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
-            player_velocity_y = player_velocity_y + player_acceleration * frame_scale
+        if muzzle_flash_timer > 0:
+            nose_x = int(player_x + world_offset_x)
+            nose_y = int(player_y - player_sprite.get_height() // 2 + world_offset_y)
+            halo_color = powerup_colors.get(active_weapon, (255, 230, 120))
+            pygame.draw.circle(screen, halo_color, (nose_x, nose_y), 4 + muzzle_flash_timer * 2)
+            pygame.draw.circle(screen, (255, 255, 255), (nose_x, nose_y), 2 + muzzle_flash_timer)
 
-        if keys[pygame.K_q]:
-            radial_speed_ly_per_second = radial_speed_ly_per_second - 260 * seconds_passed
-        if keys[pygame.K_e]:
-            radial_speed_ly_per_second = radial_speed_ly_per_second + 260 * seconds_passed
-        if keys[pygame.K_r]:
-            radial_speed_ly_per_second = 0
-        if keys[pygame.K_z]:
-            orbit_speed_degrees_per_second = orbit_speed_degrees_per_second - 80 * seconds_passed
-        if keys[pygame.K_x]:
-            orbit_speed_degrees_per_second = orbit_speed_degrees_per_second + 80 * seconds_passed
-        if keys[pygame.K_c]:
-            orbit_speed_degrees_per_second = 0
+        engine_y = player_y + player_sprite.get_height() // 2 - 5
+        engine_color = powerup_colors.get(active_weapon, (255, 150, 30))
+        pygame.draw.circle(screen, engine_color, (int(player_x + world_offset_x), int(engine_y + world_offset_y)), 8)
+        pygame.draw.circle(screen, (255, 230, 120), (int(player_x + world_offset_x), int(engine_y + world_offset_y)), 4)
 
-        radial_speed_ly_per_second = max(-1200, min(1200, radial_speed_ly_per_second))
-        if galaxy_distance < 1 and radial_speed_ly_per_second < 0:
-            radial_speed_ly_per_second = max(radial_speed_ly_per_second, -get_close_center_speed_limit(galaxy_distance))
-        orbit_speed_degrees_per_second = max(-180, min(180, orbit_speed_degrees_per_second))
-        galaxy_distance = galaxy_distance + radial_speed_ly_per_second * seconds_passed
-        galaxy_distance = max(minimum_black_hole_distance, min(max_galaxy_distance, galaxy_distance))
-        if galaxy_distance <= minimum_black_hole_distance and radial_speed_ly_per_second < 0:
-            black_hole_crash = True
-            screen_shake_timer = 35
-            screen_shake_strength = 14
-            running = False
-        orbit_angle = orbit_angle + math.radians(orbit_speed_degrees_per_second) * seconds_passed
+        player_rect = player_sprite.get_rect(center=(player_x + world_offset_x, player_y + world_offset_y))
+        screen.blit(player_sprite, player_rect)
+        if player_hit_timer > 0 and player_hit_timer % 6 < 3:
+            flash_surface = player_sprite.copy()
+            flash_surface.fill((255, 80, 80, 140), special_flags=pygame.BLEND_RGBA_ADD)
+            screen.blit(flash_surface, player_rect)
+        if graze_pulse_timer > 0:
+            pygame.draw.circle(screen, (120, 230, 255), (int(player_x + world_offset_x), int(player_y + world_offset_y)), 30, 1)
 
-        current_player_max_speed = player_max_speed * get_engine_multiplier()
-        player_velocity_x = max(-current_player_max_speed, min(current_player_max_speed, player_velocity_x))
-        player_velocity_y = max(-current_player_max_speed, min(current_player_max_speed, player_velocity_y))
-        player_x = player_x + player_velocity_x * seconds_passed
-        player_y = player_y + player_velocity_y * seconds_passed
-        player_velocity_x = player_velocity_x * (player_friction ** frame_scale)
-        player_velocity_y = player_velocity_y * (player_friction ** frame_scale)
+        for popup in score_popups:
+            popup_text = font.render(popup[0], True, popup[5])
+            popup_rect = popup_text.get_rect(center=(popup[1] + world_offset_x, popup[2] + world_offset_y))
+            screen.blit(popup_text, popup_rect)
 
-        player_half_width = player_sprite.get_width() // 2
-        player_half_height = player_sprite.get_height() // 2
-        if player_x < player_half_width:
-            player_x = player_half_width
-            player_velocity_x = 0
-        if player_x > SCREEN_WIDTH - player_half_width:
-            player_x = SCREEN_WIDTH - player_half_width
-            player_velocity_x = 0
-        if player_y < 90:
-            player_y = 90
-            player_velocity_y = 0
-        if player_y > SCREEN_HEIGHT - player_half_height:
-            player_y = SCREEN_HEIGHT - player_half_height
-            player_velocity_y = 0
+        draw_special_move(special_move_weapon, special_move_timer)
 
-    # --- DRAW ---
-    draw_stage_background(current_stage)
-    world_offset_x = 0
-    world_offset_y = 0
-    if screen_shake_timer > 0 and not paused:
-        world_offset_x = random.randint(-screen_shake_strength, screen_shake_strength)
-        world_offset_y = random.randint(-screen_shake_strength, screen_shake_strength)
+        score_color = (255, 230, 80) if high_score_beaten else (255, 255, 255)
+        score_text = font.render("Score: " + str(score), True, score_color)
+        screen.blit(score_text, (10, 10))
+        lives_text = font.render("Lives: " + str(lives), True, (255, 255, 255))
+        screen.blit(lives_text, (10, 40))
+        if lives <= 5 and pygame.time.get_ticks() % 700 < 450:
+            danger_text = font.render("DANGER", True, (255, 80, 80))
+            screen.blit(danger_text, (130, 40))
+        if combo_count >= 2:
+            combo_color = combo_tier_colors[score_multiplier]
+            combo_text = medium_32_pixel_font.render("x" + str(score_multiplier), True, combo_color)
+            screen.blit(combo_text, (205, 6))
+            chain_text = small_font.render(str(combo_count) + " CHAIN", True, (220, 235, 255))
+            screen.blit(chain_text, (262, 16))
+            combo_bar_rect = pygame.Rect(205, 42, 110, 8)
+            combo_fill = max(0, min(1, combo_timer / combo_window))
+            pygame.draw.rect(screen, (10, 20, 34), combo_bar_rect, border_radius=4)
+            pygame.draw.rect(screen, combo_color, (combo_bar_rect.x, combo_bar_rect.y, int(combo_bar_rect.width * combo_fill), combo_bar_rect.height), border_radius=4)
+            pygame.draw.rect(screen, (190, 230, 255), combo_bar_rect, 1, border_radius=4)
+        if boss is None and boss_warning_timer == 0 and 600 <= wave_timer < 760 and combo_count >= 5:
+            if pygame.time.get_ticks() % 800 < 500:
+                hold_text = small_font.render("HOLD THE COMBO", True, (255, 220, 80))
+                screen.blit(hold_text, (205, 56))
+        if active_weapon != "single":
+            seconds_left = weapon_timer // 60 + 1
+            weapon_text = font.render("Weapon: " + active_weapon.upper() + " " + str(seconds_left), True, powerup_colors[active_weapon])
+            screen.blit(weapon_text, (10, 70))
 
-    for star in stars:
-        pygame.draw.circle(screen, star[4], (int(star[0] + world_offset_x), int(star[1] + world_offset_y)), star[3])
+        shield_y = 102 if active_weapon != "single" else 72
+        shield_rect = pygame.Rect(10, shield_y, 180, 12)
+        shield_fill = 0 if shield_max <= 0 else max(0, min(1, shield_current / shield_max))
+        pygame.draw.rect(screen, (10, 20, 34), shield_rect, border_radius=5)
+        pygame.draw.rect(screen, (70, 220, 255), (shield_rect.x, shield_rect.y, int(shield_rect.width * shield_fill), shield_rect.height), border_radius=5)
+        pygame.draw.rect(screen, (190, 230, 255), shield_rect, 1, border_radius=5)
+        shield_text = small_font.render("Shield " + str(int(shield_current)) + "/" + str(int(shield_max)), True, (210, 235, 255))
+        screen.blit(shield_text, (10, shield_y + 14))
 
-    for laser in lasers:
-        laser_color = powerup_colors.get(laser[4], (255, 255, 0))
-        laser_width = 9 if laser[4] == "heavy" else 5
-        laser_start = (laser[0] + world_offset_x, laser[1] + world_offset_y)
-        laser_end = (laser[0] + laser[2] * 4 + world_offset_x, laser[1] - 18 + world_offset_y)
-        pygame.draw.line(screen, (255, 255, 255), laser_start, laser_end, laser_width + 3)
-        pygame.draw.line(screen, laser_color, laser_start, laser_end, laser_width)
+        draw_stage_hud()
+        draw_galaxy_progress(galaxy_distance, radial_speed_ly_per_second, orbit_speed_degrees_per_second, orbit_angle)
 
-    for bullet in enemy_bullets:
-        bullet_start = (bullet[0] + world_offset_x, bullet[1] + world_offset_y)
-        bullet_end = (bullet[0] + bullet[2] * 3 + world_offset_x, bullet[1] + 14 + world_offset_y)
-        pygame.draw.line(screen, (255, 60, 90), bullet_start, bullet_end, 8)
-        pygame.draw.line(screen, (255, 190, 210), bullet_start, bullet_end, 3)
+        if boss_warning_timer > 0:
+            warning_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            warning_overlay.fill((255, 30, 30, int(40 + 25 * math.sin(boss_warning_timer / 6))))
+            screen.blit(warning_overlay, (0, 0))
+            if boss_warning_timer % 30 < 18:
+                warning_text = medium_32_pixel_font.render("!! " + stages[current_stage]["boss"].upper() + " APPROACHING !!", True, (255, 80, 80))
+                screen.blit(warning_text, warning_text.get_rect(center=(SCREEN_WIDTH // 2, 230)))
 
-    for enemy in enemies:
-        enemy_sprite = enemy_sprites[enemy[2]]
-        enemy_rect = enemy_sprite.get_rect(center=(enemy[0] + world_offset_x, enemy[1] + world_offset_y))
-        screen.blit(enemy_sprite, enemy_rect)
+        if lives <= 5:
+            vignette_alpha = int(40 + 25 * math.sin(pygame.time.get_ticks() / 150))
+            danger_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            pygame.draw.rect(danger_overlay, (255, 30, 30, vignette_alpha), (0, 0, SCREEN_WIDTH, 26))
+            pygame.draw.rect(danger_overlay, (255, 30, 30, vignette_alpha), (0, SCREEN_HEIGHT - 26, SCREEN_WIDTH, 26))
+            pygame.draw.rect(danger_overlay, (255, 30, 30, vignette_alpha), (0, 0, 26, SCREEN_HEIGHT))
+            pygame.draw.rect(danger_overlay, (255, 30, 30, vignette_alpha), (SCREEN_WIDTH - 26, 0, 26, SCREEN_HEIGHT))
+            screen.blit(danger_overlay, (0, 0))
 
-    draw_boss()
+        if milestone_flash_timer > 0:
+            milestone_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            milestone_overlay.fill((255, 255, 255, int(60 * milestone_flash_timer / 8)))
+            screen.blit(milestone_overlay, (0, 0))
 
-    for powerup in powerups:
-        powerup_color = powerup_colors[powerup[2]]
-        pulse = 16 + int(math.sin(pygame.time.get_ticks() / 120) * 3)
-        powerup_points = [
-            (powerup[0] + world_offset_x, powerup[1] - pulse + world_offset_y),
-            (powerup[0] + pulse + world_offset_x, powerup[1] + world_offset_y),
-            (powerup[0] + world_offset_x, powerup[1] + pulse + world_offset_y),
-            (powerup[0] - pulse + world_offset_x, powerup[1] + world_offset_y),
-        ]
-        pygame.draw.polygon(screen, powerup_color, powerup_points)
-        pygame.draw.polygon(screen, (255, 255, 255), powerup_points, 2)
-        powerup_text = font.render(powerup_labels[powerup[2]], True, (10, 10, 20))
-        powerup_text_rect = powerup_text.get_rect(center=(powerup[0] + world_offset_x, powerup[1] + world_offset_y))
-        screen.blit(powerup_text, powerup_text_rect)
+        if upgrade_screen:
+            draw_upgrade_screen()
 
-    for particle in particles:
-        pygame.draw.circle(
-            screen,
-            particle[5],
-            (int(particle[0] + world_offset_x), int(particle[1] + world_offset_y)),
-            particle[6],
-        )
+        if paused:
+            pause_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            pause_overlay.fill((0, 0, 0, 110))
+            screen.blit(pause_overlay, (0, 0))
+            paused_text = medium_32_pixel_font.render("PAUSED", True, (235, 245, 255))
+            screen.blit(paused_text, paused_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)))
 
-    engine_y = player_y + player_sprite.get_height() // 2 - 5
-    engine_color = powerup_colors.get(active_weapon, (255, 150, 30))
-    pygame.draw.circle(screen, engine_color, (int(player_x + world_offset_x), int(engine_y + world_offset_y)), 8)
-    pygame.draw.circle(screen, (255, 230, 120), (int(player_x + world_offset_x), int(engine_y + world_offset_y)), 4)
+        if not upgrade_screen:
+            draw_pause_play_button(paused)
 
-    player_rect = player_sprite.get_rect(center=(player_x + world_offset_x, player_y + world_offset_y))
-    screen.blit(player_sprite, player_rect)
-    if player_hit_timer > 0 and player_hit_timer % 6 < 3:
-        flash_surface = player_sprite.copy()
-        flash_surface.fill((255, 80, 80, 140), special_flags=pygame.BLEND_RGBA_ADD)
-        screen.blit(flash_surface, player_rect)
+        pygame.display.flip()
+        clock.tick(TARGET_FPS)
 
-    for popup in score_popups:
-        popup_text = font.render(popup[0], True, popup[5])
-        popup_rect = popup_text.get_rect(center=(popup[1] + world_offset_x, popup[2] + world_offset_y))
-        screen.blit(popup_text, popup_rect)
+    music_channel.stop()
+    if score > high_score:
+        high_score = score
+        high_score_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        save_high_score(high_score, high_score_time)
+    lifetime_stats["total_runs"] = lifetime_stats["total_runs"] + 1
+    lifetime_stats["best_combo"] = max(lifetime_stats["best_combo"], best_combo_this_run)
+    save_stats()
 
-    draw_special_move(special_move_weapon, special_move_timer)
+    game_over = True
+    show_replay_prompt = True
+    yes_button = pygame.Rect(160, 270, 200, 80)
+    no_button = pygame.Rect(440, 270, 200, 80)
 
-    score_text = font.render("Score: " + str(score), True, (255, 255, 255))
-    screen.blit(score_text, (10, 10))
-    lives_text = font.render("Lives: " + str(lives), True, (255, 255, 255))
-    screen.blit(lives_text, (10, 40))
-    if active_weapon != "single":
-        seconds_left = weapon_timer // 60 + 1
-        weapon_text = font.render("Weapon: " + active_weapon.upper() + " " + str(seconds_left), True, powerup_colors[active_weapon])
-        screen.blit(weapon_text, (10, 70))
+    while game_over:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                game_over = False
+                app_running = False
+            if show_replay_prompt and event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_y, pygame.K_r):
+                    reset_run()
+                    game_over = False
+                if event.key == pygame.K_n:
+                    show_replay_prompt = False
+            if show_replay_prompt and event.type == pygame.MOUSEBUTTONDOWN:
+                if yes_button.collidepoint(event.pos):
+                    reset_run()
+                    game_over = False
+                if no_button.collidepoint(event.pos):
+                    show_replay_prompt = False
 
-    shield_y = 102 if active_weapon != "single" else 72
-    shield_rect = pygame.Rect(10, shield_y, 180, 12)
-    shield_fill = 0 if shield_max <= 0 else max(0, min(1, shield_current / shield_max))
-    pygame.draw.rect(screen, (10, 20, 34), shield_rect, border_radius=5)
-    pygame.draw.rect(screen, (70, 220, 255), (shield_rect.x, shield_rect.y, int(shield_rect.width * shield_fill), shield_rect.height), border_radius=5)
-    pygame.draw.rect(screen, (190, 230, 255), shield_rect, 1, border_radius=5)
-    shield_text = small_font.render("Shield " + str(int(shield_current)) + "/" + str(int(shield_max)), True, (210, 235, 255))
-    screen.blit(shield_text, (10, shield_y + 14))
+        screen.fill((0, 0, 0))
 
-    draw_stage_hud()
-    draw_galaxy_progress(galaxy_distance, radial_speed_ly_per_second, orbit_speed_degrees_per_second, orbit_angle)
+        if show_replay_prompt:
+            mouse_pos = pygame.mouse.get_pos()
+            yes_color = (70, 190, 110) if yes_button.collidepoint(mouse_pos) else (40, 140, 80)
+            no_color = (190, 70, 70) if no_button.collidepoint(mouse_pos) else (140, 40, 40)
 
-    if upgrade_screen:
-        draw_upgrade_screen()
+            pygame.draw.rect(screen, yes_color, yes_button, border_radius=10)
+            pygame.draw.rect(screen, no_color, no_button, border_radius=10)
+            pygame.draw.rect(screen, (255, 255, 255), yes_button, 3, border_radius=10)
+            pygame.draw.rect(screen, (255, 255, 255), no_button, 3, border_radius=10)
 
-    if paused:
-        pause_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        pause_overlay.fill((0, 0, 0, 110))
-        screen.blit(pause_overlay, (0, 0))
-        paused_text = medium_32_pixel_font.render("PAUSED", True, (235, 245, 255))
-        screen.blit(paused_text, paused_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)))
+            yes_text = medium_32_pixel_font.render("YES", True, (255, 255, 255))
+            no_text = medium_32_pixel_font.render("NO", True, (255, 255, 255))
+            screen.blit(yes_text, yes_text.get_rect(center=yes_button.center))
+            screen.blit(no_text, no_text.get_rect(center=no_button.center))
 
-    if not upgrade_screen:
-        draw_pause_play_button(paused)
-
-    pygame.display.flip()
-    clock.tick(TARGET_FPS)
-
-music_channel.stop()
-if score > high_score:
-    high_score = score
-    high_score_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    save_high_score(high_score, high_score_time)
-
-game_over = True
-show_replay_prompt = True
-yes_button = pygame.Rect(160, 270, 200, 80)
-no_button = pygame.Rect(440, 270, 200, 80)
-
-while game_over:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            game_over = False
-        if show_replay_prompt and event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_y:
-                restart_game()
-            if event.key == pygame.K_n:
-                show_replay_prompt = False
-        if show_replay_prompt and event.type == pygame.MOUSEBUTTONDOWN:
-            if yes_button.collidepoint(event.pos):
-                restart_game()
-            if no_button.collidepoint(event.pos):
-                show_replay_prompt = False
-
-    screen.fill((0, 0, 0))
-
-    if show_replay_prompt:
-        mouse_pos = pygame.mouse.get_pos()
-        yes_color = (70, 190, 110) if yes_button.collidepoint(mouse_pos) else (40, 140, 80)
-        no_color = (190, 70, 70) if no_button.collidepoint(mouse_pos) else (140, 40, 40)
-
-        pygame.draw.rect(screen, yes_color, yes_button, border_radius=10)
-        pygame.draw.rect(screen, no_color, no_button, border_radius=10)
-        pygame.draw.rect(screen, (255, 255, 255), yes_button, 3, border_radius=10)
-        pygame.draw.rect(screen, (255, 255, 255), no_button, 3, border_radius=10)
-
-        yes_text = medium_32_pixel_font.render("YES", True, (255, 255, 255))
-        no_text = medium_32_pixel_font.render("NO", True, (255, 255, 255))
-        screen.blit(yes_text, yes_text.get_rect(center=yes_button.center))
-        screen.blit(no_text, no_text.get_rect(center=no_button.center))
-    else:
-        if black_hole_crash:
-            end_title = "BLACK HOLE CRASH"
-        elif mission_complete:
-            end_title = "MISSION COMPLETE"
+            replay_title = medium_32_pixel_font.render("FLY AGAIN?", True, (235, 245, 255))
+            screen.blit(replay_title, replay_title.get_rect(center=(SCREEN_WIDTH // 2, 200)))
+            hint_text = small_font.render("R / Y - FLY AGAIN    N - QUIT", True, (180, 200, 230))
+            screen.blit(hint_text, hint_text.get_rect(center=(SCREEN_WIDTH // 2, 390)))
         else:
-            end_title = "GAME OVER"
-        over_text = big_64pixel_font.render(end_title, True, (255, 50, 50))
-        screen.blit(over_text, (100, 100))
+            if black_hole_crash:
+                end_title = "BLACK HOLE CRASH"
+            elif mission_complete:
+                end_title = "MISSION COMPLETE"
+            else:
+                end_title = "GAME OVER"
+            over_text = big_64pixel_font.render(end_title, True, (255, 50, 50))
+            screen.blit(over_text, (100, 100))
 
-        final_text = medium_32_pixel_font.render("FINAL SCORE: " + str(score), True, (255, 255, 255))
-        screen.blit(final_text, (100, 300))
+            final_text = medium_32_pixel_font.render("FINAL SCORE: " + str(score), True, (255, 255, 255))
+            screen.blit(final_text, (100, 300))
 
-        high_score_text = medium_32_pixel_font.render("HIGH SCORE: " + str(high_score), True, (255, 220, 80))
-        screen.blit(high_score_text, (100, 350))
+            high_score_text = medium_32_pixel_font.render("HIGH SCORE: " + str(high_score), True, (255, 220, 80))
+            screen.blit(high_score_text, (100, 350))
 
-        high_score_time_text = font.render("BEST SCORE TIME: " + high_score_time, True, (200, 220, 255))
-        screen.blit(high_score_time_text, (100, 395))
+            high_score_time_text = font.render("BEST SCORE TIME: " + high_score_time, True, (200, 220, 255))
+            screen.blit(high_score_time_text, (100, 395))
 
-        quit_text = medium_32_pixel_font.render("CLOSE THE WINDOW TO EXIT", True, (150, 150, 150))
-        screen.blit(quit_text, (100, 500))
+            run_stats_text = font.render("BEST COMBO: " + str(best_combo_this_run) + " CHAIN (x" + str(get_combo_multiplier(best_combo_this_run)) + ")    GRAZES: " + str(graze_count_this_run), True, (120, 230, 255))
+            screen.blit(run_stats_text, (100, 430))
 
-    pygame.display.flip()
-    clock.tick(TARGET_FPS)
+            lifetime_text = font.render("ALL-TIME: " + str(lifetime_stats["total_kills"]) + " KILLS / " + str(lifetime_stats["total_boss_kills"]) + " BOSSES / " + str(lifetime_stats["total_runs"]) + " RUNS", True, (200, 220, 255))
+            screen.blit(lifetime_text, (100, 460))
+
+            quit_text = medium_32_pixel_font.render("CLOSE THE WINDOW TO EXIT", True, (150, 150, 150))
+            screen.blit(quit_text, (100, 510))
+
+        pygame.display.flip()
+        clock.tick(TARGET_FPS)
 pygame.quit()

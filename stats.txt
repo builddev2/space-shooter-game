@@ -1,0 +1,4 @@
+best_combo=11
+total_kills=100
+total_runs=2
+total_boss_kills=4
