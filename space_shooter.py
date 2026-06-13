@@ -133,7 +133,7 @@ def reset_run():
     global galaxy_distance, radial_speed_ly_per_second, orbit_speed_degrees_per_second, orbit_angle, black_hole_crash
     global lasers, fire_timer, powerups, powerup_timer, active_weapon, weapon_timer
     global special_move_weapon, special_move_timer, enemies, spawn_timer, enemy_bullets
-    global particles, score_popups, shockwaves, screen_shake_timer, screen_shake_strength, player_hit_timer
+    global particles, explosions, score_popups, shockwaves, screen_shake_timer, screen_shake_strength, player_hit_timer
     global score, lives, current_stage, stage_score, boss, mission_complete
     global gun_upgrade_level, shield_upgrade_level, engine_upgrade_level, shield_current, upgrade_screen, paused
     global combo_count, combo_timer, score_multiplier, best_combo_this_run, milestone_flash_timer
@@ -162,6 +162,7 @@ def reset_run():
     spawn_timer = 0
     enemy_bullets = []
     particles = []
+    explosions = []
     score_popups = []
     shockwaves = []
     screen_shake_timer = 0
@@ -298,13 +299,11 @@ def draw_galaxy_progress(distance, radial_speed, orbit_speed, orbit_angle):
     progress_rect = pygame.Rect(465, 12, 300, 22)
     distance_remaining = max(0, min(1, distance / max_galaxy_distance))
     progress_color = get_distance_color(distance)
-    pygame.draw.rect(screen, (12, 16, 26), progress_rect, border_radius=8)
-    pygame.draw.rect(screen, (95, 105, 125), progress_rect, 2, border_radius=8)
+    draw_pixel_panel(screen, progress_rect, (95, 105, 125), fill=(12, 16, 26))
     pygame.draw.rect(
         screen,
         progress_color,
         (progress_rect.x + 3, progress_rect.y + 3, int((progress_rect.width - 6) * distance_remaining), progress_rect.height - 6),
-        border_radius=6,
     )
 
     end_label = small_font.render("GAME OVER", True, (255, 120, 120))
@@ -316,8 +315,7 @@ def draw_galaxy_progress(distance, radial_speed, orbit_speed, orbit_angle):
     screen.blit(distance_text, (progress_rect.x, progress_rect.y + 28))
 
     map_rect = pygame.Rect(620, 95, 160, 185)
-    pygame.draw.rect(screen, (8, 11, 22), map_rect, border_radius=8)
-    pygame.draw.rect(screen, (75, 90, 120), map_rect, 2, border_radius=8)
+    draw_pixel_panel(screen, map_rect, (75, 90, 120), fill=(8, 11, 22))
     map_center = (map_rect.centerx, map_rect.y + 92)
     map_radius = 58
 
@@ -337,7 +335,7 @@ def draw_galaxy_progress(distance, radial_speed, orbit_speed, orbit_angle):
     ship_x = map_center[0] + math.cos(orbit_angle) * ship_radius
     ship_y = map_center[1] + math.sin(orbit_angle) * ship_radius
     pygame.draw.line(screen, (70, 95, 125), map_center, (ship_x, ship_y), 1)
-    pygame.draw.circle(screen, progress_color, (int(ship_x), int(ship_y)), 5)
+    screen.fill(progress_color, (int(ship_x) - 2, int(ship_y) - 2, 5, 5))
 
     if radial_speed < -1:
         direction = "CLOSER"
@@ -360,12 +358,13 @@ def draw_galaxy_progress(distance, radial_speed, orbit_speed, orbit_angle):
 def draw_pause_play_button(paused):
     button_text = "PLAY" if paused else "PAUSE"
     mouse_pos = pygame.mouse.get_pos()
+    accent = (120, 190, 255)
     button_color = (55, 145, 220) if pause_button.collidepoint(mouse_pos) else (28, 78, 135)
     if paused:
+        accent = (130, 235, 170)
         button_color = (55, 175, 110) if pause_button.collidepoint(mouse_pos) else (35, 115, 75)
 
-    pygame.draw.rect(screen, button_color, pause_button, border_radius=8)
-    pygame.draw.rect(screen, (230, 240, 255), pause_button, 2, border_radius=8)
+    draw_pixel_panel(screen, pause_button, accent, fill=button_color)
     label = small_font.render(button_text, True, (255, 255, 255))
     screen.blit(label, label.get_rect(center=pause_button.center))
 
@@ -399,18 +398,27 @@ def apply_upgrade(upgrade_name):
 
 
 def draw_upgrade_screen():
-    screen.fill((5, 8, 18))
-    for star in stars:
-        pygame.draw.circle(screen, star[4], (int(star[0]), int(star[1])), star[3])
+    screen.blit(stage_backgrounds[min(current_stage, len(stage_backgrounds) - 1)], (0, 0))
+    draw_star_layers()
 
-    title = medium_32_pixel_font.render("CHOOSE SHIP UPGRADE", True, (235, 245, 255))
-    screen.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 48)))
+    draw_text_shadowed(medium_32_pixel_font, "CHOOSE SHIP UPGRADE", (235, 245, 255), center=(SCREEN_WIDTH // 2, 48))
 
-    ship_preview = pygame.transform.scale(player_sprite, (player_sprite.get_width() * 2, player_sprite.get_height() * 2))
-    ship_rect = ship_preview.get_rect(center=(SCREEN_WIDTH // 2, 190))
-    screen.blit(ship_preview, ship_rect)
-    pygame.draw.circle(screen, (60, 220, 255), ship_rect.center, 86, 2)
-    pygame.draw.circle(screen, (255, 220, 80), (ship_rect.centerx, ship_rect.bottom - 8), 13)
+    ship_rect = player_preview_sprite.get_rect(center=(SCREEN_WIDTH // 2, 190))
+    blit_glow(ship_rect.centerx, ship_rect.centery, (60, 220, 255), 90)
+    screen.blit(player_preview_sprite, ship_rect)
+
+    bracket_rect = ship_rect.inflate(44, 44)
+    bracket_color = (60, 220, 255)
+    arm = 21
+    thickness = 3
+    pygame.draw.rect(screen, bracket_color, (bracket_rect.left, bracket_rect.top, arm, thickness))
+    pygame.draw.rect(screen, bracket_color, (bracket_rect.left, bracket_rect.top, thickness, arm))
+    pygame.draw.rect(screen, bracket_color, (bracket_rect.right - arm, bracket_rect.top, arm, thickness))
+    pygame.draw.rect(screen, bracket_color, (bracket_rect.right - thickness, bracket_rect.top, thickness, arm))
+    pygame.draw.rect(screen, bracket_color, (bracket_rect.left, bracket_rect.bottom - thickness, arm, thickness))
+    pygame.draw.rect(screen, bracket_color, (bracket_rect.left, bracket_rect.bottom - arm, thickness, arm))
+    pygame.draw.rect(screen, bracket_color, (bracket_rect.right - arm, bracket_rect.bottom - thickness, arm, thickness))
+    pygame.draw.rect(screen, bracket_color, (bracket_rect.right - thickness, bracket_rect.bottom - arm, thickness, arm))
 
     upgrade_cards = [
         ("guns", "GUNS", "+20% damage", "Level " + str(gun_upgrade_level)),
@@ -429,19 +437,52 @@ def draw_upgrade_screen():
         elif upgrade_name == "engine":
             accent = (100, 255, 135)
 
-        pygame.draw.rect(screen, card_color, rect, border_radius=8)
-        pygame.draw.rect(screen, accent, rect, 3, border_radius=8)
-        card_title = font.render(title_text, True, accent)
-        card_bonus = small_font.render(bonus_text, True, (235, 245, 255))
-        card_level = small_font.render(level_text, True, (175, 195, 225))
-        key_text = small_font.render("Press " + str(i + 1), True, (255, 255, 255))
-        screen.blit(card_title, card_title.get_rect(center=(rect.centerx, rect.y + 34)))
-        screen.blit(card_bonus, card_bonus.get_rect(center=(rect.centerx, rect.y + 70)))
-        screen.blit(card_level, card_level.get_rect(center=(rect.centerx, rect.y + 98)))
-        screen.blit(key_text, key_text.get_rect(center=(rect.centerx, rect.bottom - 24)))
+        draw_pixel_panel(screen, rect, accent, fill=card_color)
+        draw_text_shadowed(font, title_text, accent, center=(rect.centerx, rect.y + 34))
+        draw_text_shadowed(small_font, bonus_text, (235, 245, 255), center=(rect.centerx, rect.y + 70))
+        draw_text_shadowed(small_font, level_text, (175, 195, 225), center=(rect.centerx, rect.y + 98))
+        draw_text_shadowed(small_font, "Press " + str(i + 1), (255, 255, 255), center=(rect.centerx, rect.bottom - 24))
 
 
-def make_pixel_sprite(rows, colors, scale):
+OUTLINE_COLOR = (16, 14, 28)
+TEXT_SHADOW_COLOR = (16, 14, 28)
+HUD_FILL = (10, 14, 26)
+HUD_BORDER = (90, 110, 150)
+CRT_OVERLAY = True
+
+
+def add_outline_rows(rows):
+    width = max(len(row) for row in rows)
+    padded = ["." * (width + 2)]
+    for row in rows:
+        padded.append("." + row.ljust(width, ".") + ".")
+    padded.append("." * (width + 2))
+
+    outlined = []
+    for y, row in enumerate(padded):
+        new_row = ""
+        for x, pixel in enumerate(row):
+            if pixel == ".":
+                neighbors = [
+                    padded[y - 1][x] if y > 0 else ".",
+                    padded[y + 1][x] if y < len(padded) - 1 else ".",
+                    row[x - 1] if x > 0 else ".",
+                    row[x + 1] if x < len(row) - 1 else ".",
+                ]
+                if any(neighbor not in (".", "0") for neighbor in neighbors):
+                    new_row += "0"
+                    continue
+            new_row += pixel
+        outlined.append(new_row)
+    return outlined
+
+
+def make_pixel_sprite(rows, colors, scale, outline=True):
+    if outline:
+        rows = add_outline_rows(rows)
+        colors = dict(colors)
+        colors["0"] = OUTLINE_COLOR
+
     width = max(len(row) for row in rows)
     height = len(rows)
     sprite = pygame.Surface((width, height), pygame.SRCALPHA)
@@ -452,6 +493,193 @@ def make_pixel_sprite(rows, colors, scale):
                 sprite.set_at((x, y), colors[pixel])
 
     return pygame.transform.scale(sprite, (width * scale, height * scale)).convert_alpha()
+
+
+def mirror_rows(half_rows):
+    return [row + row[::-1] for row in half_rows]
+
+
+def make_flash_sprite(sprite, flash_color=(255, 80, 80, 140)):
+    flash = sprite.copy()
+    flash.fill(flash_color, special_flags=pygame.BLEND_RGBA_ADD)
+    return flash
+
+
+def hitbox_rect(center_x, center_y, size):
+    return pygame.Rect(int(center_x - size[0] / 2), int(center_y - size[1] / 2), size[0], size[1])
+
+
+GLOW_CACHE = {}
+
+
+def make_glow(color, radius):
+    base_radius = max(2, radius // 3)
+    size = base_radius * 2 + 2
+    surf = pygame.Surface((size, size))
+    center = size // 2
+    for factor, brightness in [(1.0, 0.10), (0.72, 0.2), (0.45, 0.36), (0.22, 0.6)]:
+        ring_color = (int(color[0] * brightness), int(color[1] * brightness), int(color[2] * brightness))
+        pygame.draw.circle(surf, ring_color, (center, center), max(1, int(base_radius * factor)))
+    return pygame.transform.scale(surf, (size * 3, size * 3))
+
+
+def get_glow(color, radius):
+    key = (color, radius)
+    if key not in GLOW_CACHE:
+        GLOW_CACHE[key] = make_glow(color, radius)
+    return GLOW_CACHE[key]
+
+
+def blit_glow(x, y, color, radius):
+    glow = get_glow(color, radius)
+    screen.blit(glow, glow.get_rect(center=(int(x), int(y))), special_flags=pygame.BLEND_RGB_ADD)
+
+
+def make_explosion_frames(base_size, scale):
+    rng = random.Random(base_size * 7919)
+    center = (base_size - 1) / 2
+    max_radius = base_size / 2
+    fire_ramp = [(255, 255, 255), (255, 230, 130), (255, 150, 40), (190, 60, 25)]
+    smoke_color = (70, 60, 75)
+    dark_smoke = (45, 38, 52)
+    frames = []
+    for frame_index in range(7):
+        surf = pygame.Surface((base_size, base_size), pygame.SRCALPHA)
+        if frame_index <= 2:
+            radius = max_radius * (0.35 + 0.28 * frame_index)
+            for y in range(base_size):
+                for x in range(base_size):
+                    distance = math.hypot(x - center, y - center)
+                    if distance <= radius - rng.random() * 0.9:
+                        ramp_position = distance / max(1, radius)
+                        if ramp_position < 0.35 - 0.1 * frame_index:
+                            surf.set_at((x, y), fire_ramp[0])
+                        elif ramp_position < 0.62:
+                            surf.set_at((x, y), fire_ramp[1])
+                        elif ramp_position < 0.85:
+                            surf.set_at((x, y), fire_ramp[2])
+                        else:
+                            surf.set_at((x, y), fire_ramp[3])
+        elif frame_index <= 4:
+            radius = max_radius * (0.92 + 0.08 * (frame_index - 3))
+            for y in range(base_size):
+                for x in range(base_size):
+                    distance = math.hypot(x - center, y - center)
+                    if radius - 2.2 <= distance <= radius - rng.random():
+                        surf.set_at((x, y), fire_ramp[2] if rng.random() < 0.6 else fire_ramp[3])
+            for _ in range(base_size):
+                angle = rng.uniform(0, math.tau)
+                throw = rng.uniform(0.4, 1.0) * max_radius
+                ejecta_x = int(center + math.cos(angle) * throw)
+                ejecta_y = int(center + math.sin(angle) * throw)
+                if 0 <= ejecta_x < base_size and 0 <= ejecta_y < base_size:
+                    surf.set_at((ejecta_x, ejecta_y), fire_ramp[1] if rng.random() < 0.4 else fire_ramp[2])
+        else:
+            speck_count = base_size * (2 if frame_index == 5 else 1)
+            for _ in range(speck_count):
+                angle = rng.uniform(0, math.tau)
+                throw = rng.uniform(0.3, 1.0) * max_radius
+                speck_x = int(center + math.cos(angle) * throw)
+                speck_y = int(center + math.sin(angle) * throw)
+                if 0 <= speck_x < base_size and 0 <= speck_y < base_size:
+                    surf.set_at((speck_x, speck_y), smoke_color if rng.random() < 0.7 else dark_smoke)
+        frames.append(pygame.transform.scale(surf, (base_size * scale, base_size * scale)).convert_alpha())
+    return frames
+
+
+def make_nebula(color, seed):
+    rng = random.Random(seed)
+    surf = pygame.Surface((100, 75), pygame.SRCALPHA)
+    for _ in range(16):
+        blob_x = rng.randint(-10, 110)
+        blob_y = rng.randint(-10, 85)
+        blob_radius = rng.randint(6, 24)
+        blob_alpha = rng.randint(9, 20)
+        pygame.draw.circle(surf, (color[0], color[1], color[2], blob_alpha), (blob_x, blob_y), blob_radius)
+    return pygame.transform.scale(surf, (SCREEN_WIDTH, SCREEN_HEIGHT))
+
+
+def make_planet(base_diameter, palette, seed, ring_color=None):
+    rng = random.Random(seed)
+    surf_width = base_diameter * 2 if ring_color else base_diameter
+    surf = pygame.Surface((surf_width, base_diameter), pygame.SRCALPHA)
+    center_x = surf_width / 2 - 0.5
+    center_y = base_diameter / 2 - 0.5
+    radius = base_diameter / 2 - 0.5
+    band_seeds = [rng.random() * 10 for _ in range(base_diameter)]
+    for y in range(base_diameter):
+        band = palette[1] if int(y * 0.45 + band_seeds[y]) % 2 == 0 else palette[2]
+        for x in range(surf_width):
+            distance = math.hypot(x - center_x, y - center_y)
+            if distance <= radius:
+                color = band
+                if (x - center_x) + (y - center_y) > radius * 0.55:
+                    color = palette[0]
+                surf.set_at((x, y), color)
+    if ring_color:
+        ring_y = base_diameter // 2
+        for x in range(surf_width):
+            distance = abs(x - center_x)
+            if radius + 1 < distance < radius * 2:
+                surf.set_at((x, ring_y), ring_color)
+                if rng.random() < 0.5:
+                    surf.set_at((x, ring_y + (1 if x % 2 else -1)), ring_color)
+    return pygame.transform.scale(surf, (surf_width * 6, base_diameter * 6))
+
+
+def make_scanline_overlay():
+    overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+    for y in range(0, SCREEN_HEIGHT, 3):
+        pygame.draw.line(overlay, (0, 0, 0, 26), (0, y), (SCREEN_WIDTH, y))
+    for inset, alpha in [(0, 30), (8, 18), (16, 9)]:
+        pygame.draw.rect(overlay, (0, 0, 0, alpha), (inset, inset, SCREEN_WIDTH - inset * 2, SCREEN_HEIGHT - inset * 2), 8)
+    return overlay
+
+
+def draw_pixel_panel(surface, rect, accent, fill=HUD_FILL):
+    pygame.draw.rect(surface, fill, rect)
+    pygame.draw.rect(surface, accent, rect, 2)
+    for corner_x in (rect.left, rect.right - 3):
+        for corner_y in (rect.top, rect.bottom - 3):
+            pygame.draw.rect(surface, accent, (corner_x, corner_y, 3, 3))
+
+
+def draw_segment_bar(surface, x, y, width, height, fraction, color, segments=12):
+    fraction = max(0, min(1, fraction))
+    pygame.draw.rect(surface, HUD_FILL, (x - 2, y - 2, width + 4, height + 4))
+    pygame.draw.rect(surface, HUD_BORDER, (x - 2, y - 2, width + 4, height + 4), 1)
+    cell_width = (width - (segments - 1) * 2) / segments
+    filled = fraction * segments
+    dim_color = (color[0] // 3, color[1] // 3, color[2] // 3)
+    for i in range(segments):
+        if i + 1 <= filled:
+            cell_color = color
+        elif i < filled:
+            cell_color = dim_color
+        else:
+            continue
+        pygame.draw.rect(surface, cell_color, (int(x + i * (cell_width + 2)), y, max(1, int(cell_width)), height))
+
+
+def draw_text_shadowed(font_object, text, color, **anchor):
+    shadow = font_object.render(text, True, TEXT_SHADOW_COLOR)
+    text_surface = font_object.render(text, True, color)
+    rect = text_surface.get_rect(**anchor)
+    screen.blit(shadow, (rect.x + 2, rect.y + 2))
+    screen.blit(text_surface, rect)
+    return rect
+
+
+def draw_star_layers(offset_x=0, offset_y=0):
+    tick = pygame.time.get_ticks()
+    for layer in star_layers:
+        layer_offset_x = int(offset_x * layer["depth"])
+        layer_offset_y = int(offset_y * layer["depth"])
+        size = layer["size"]
+        base_color, twinkle_color = layer["colors"]
+        for star in layer["stars"]:
+            color = twinkle_color if (tick // 180 + star[2]) % 7 == 0 else base_color
+            screen.fill(color, (int(star[0]) + layer_offset_x, int(star[1]) + layer_offset_y, size, size))
 
 
 def fire_player_weapon():
@@ -476,7 +704,8 @@ def fire_player_weapon():
 
 
 def add_particles(x, y, color, count, speed, life, size):
-    for i in range(count):
+    dark_color = mix_color(color, (20, 16, 30), 0.6)
+    for i in range(max(1, int(count * 0.6))):
         particles.append([
             x,
             y,
@@ -485,7 +714,12 @@ def add_particles(x, y, color, count, speed, life, size):
             random.randint(life // 2, life),
             color,
             random.randint(1, size),
+            dark_color,
         ])
+
+
+def add_explosion(x, y, size_key):
+    explosions.append([x, y, 0, size_key])
 
 
 def add_score_popup(text, x, y, color, life=45):
@@ -576,6 +810,7 @@ def damage_player():
     screen_shake_strength = 8
     player_hit_sound.play()
     add_particles(player_x, player_y, (255, 70, 70), 18, 5, 30, 4)
+    add_explosion(player_x, player_y, "small")
 
 
 def draw_special_move(weapon, timer):
@@ -642,6 +877,7 @@ def draw_special_move(weapon, timer):
     subtitle = font.render("SPECIAL WEAPON ONLINE", True, (230, 240, 255))
     overlay.blit(subtitle, (text_x + 8, text_y + 68))
     screen.blit(overlay, (0, 0))
+    blit_glow(art_x, art_y, color, 130)
 
 
 def spawn_boss():
@@ -719,6 +955,7 @@ def update_boss():
             blast_x = boss["x"] + random.randint(-60, 60)
             blast_y = boss["y"] + random.randint(-40, 40)
             add_particles(blast_x, blast_y, (255, 210, 90), 14, 5, 28, 4)
+            add_explosion(blast_x, blast_y, "small")
             enemy_hit_sound.play()
             screen_shake_timer = max(screen_shake_timer, 6)
             screen_shake_strength = max(screen_shake_strength, 4)
@@ -769,6 +1006,7 @@ def finish_boss():
     defeated_boss = stages[current_stage]["boss"]
     boss_bonus = 300 + current_stage * 100
     add_particles(boss["x"], boss["y"], (255, 210, 90), 80, 8, 60, 6)
+    add_explosion(boss["x"], boss["y"], "boss")
     add_shockwave(boss["x"], boss["y"], 160, (255, 210, 90))
     add_shockwave(boss["x"], boss["y"], 110, (255, 255, 255))
     add_score_popup(defeated_boss + " DOWN", boss["x"], boss["y"], (255, 230, 120), 75)
@@ -792,295 +1030,514 @@ def finish_boss():
 
 
 def draw_stage_background(stage_index):
-    base_color = stages[stage_index]["color"] if stage_index < len(stages) else (5, 5, 16)
-    screen.fill(base_color)
-    stripe_color = (
-        min(255, base_color[0] + 18),
-        min(255, base_color[1] + 18),
-        min(255, base_color[2] + 26),
-    )
-    for y in range(-80, SCREEN_HEIGHT + 80, 120):
-        offset = int((pygame.time.get_ticks() / 28 + stage_index * 45) % 120)
-        pygame.draw.line(screen, stripe_color, (0, y + offset), (SCREEN_WIDTH, y + offset - 90), 1)
+    screen.blit(stage_backgrounds[min(stage_index, len(stage_backgrounds) - 1)], (0, 0))
 
 
 def draw_boss():
     if boss is None:
         return
 
-    boss_sprite = boss_sprites[boss["stage"]]
+    boss_frame = (boss["timer"] // 14) % 2
+    boss_sprite = boss_sprites[boss["stage"]][boss_frame]
     boss_rect = boss_sprite.get_rect(center=(boss["x"] + world_offset_x, boss["y"] + world_offset_y))
     screen.blit(boss_sprite, boss_rect)
+    if "dying" in boss and boss["dying"] % 6 < 3:
+        screen.blit(boss_flash_sprites[boss["stage"]], boss_rect)
 
-    health_rect = pygame.Rect(170, 58, 460, 16)
-    health_fill = max(0, boss["hp"] / boss["max_hp"])
-    pygame.draw.rect(screen, (35, 10, 18), health_rect, border_radius=6)
-    pygame.draw.rect(screen, (255, 80, 90), (health_rect.x, health_rect.y, int(health_rect.width * health_fill), health_rect.height), border_radius=6)
-    pygame.draw.rect(screen, (255, 230, 230), health_rect, 2, border_radius=6)
-    boss_text = small_font.render(stages[boss["stage"]]["boss"], True, (255, 230, 230))
-    screen.blit(boss_text, boss_text.get_rect(center=(health_rect.centerx, health_rect.y - 10)))
+    draw_segment_bar(screen, 170, 58, 460, 16, max(0, boss["hp"] / boss["max_hp"]), (255, 80, 90), segments=24)
+    draw_text_shadowed(small_font, stages[boss["stage"]]["boss"], (255, 230, 230), center=(400, 46))
 
 
 def draw_stage_hud():
     stage = stages[current_stage] if current_stage < len(stages) else stages[-1]
-    stage_text = small_font.render(stage["name"], True, (220, 235, 255))
-    screen.blit(stage_text, (10, 130))
+    draw_text_shadowed(small_font, stage["name"], (220, 235, 255), topleft=(10, 130))
     if boss is None:
-        progress_text = small_font.render("BOSS SIGNAL: " + str(min(stage_score, stage["goal"])) + "/" + str(stage["goal"]), True, (255, 220, 120))
-        screen.blit(progress_text, (10, 150))
+        draw_text_shadowed(small_font, "BOSS SIGNAL: " + str(min(stage_score, stage["goal"])) + "/" + str(stage["goal"]), (255, 220, 120), topleft=(10, 150))
     else:
-        fight_text = small_font.render("BOSS FIGHT", True, (255, 120, 120))
-        screen.blit(fight_text, (10, 150))
+        draw_text_shadowed(small_font, "BOSS FIGHT", (255, 120, 120), topleft=(10, 150))
 
 
-player_sprite = make_pixel_sprite(
-    [
-        ".......W.......",
-        "......WWW......",
-        "......WCW......",
-        ".....WCCCW.....",
-        "....WCCCCCW....",
-        "...WCCCCCCCW...",
-        "..WCCCDCCCCCW..",
-        ".WCCCDDDCCCCCW.",
-        "WCCCDGGGDCCCCCW",
-        "WCCCDGGGDCCCCCW",
-        ".WCCCDDDCCCCCW.",
-        "..WWCCCCCCCWW..",
-        "....WAAAAAW....",
-        "...WWAAAAAWW...",
-        "...W..AAA..W...",
-        "......AAA......",
-    ],
-    {
-        "W": (235, 245, 255),
-        "C": (40, 210, 235),
-        "D": (18, 92, 170),
-        "G": (95, 115, 145),
-        "A": (255, 150, 30),
-    },
-    3,
-)
+PLAYER_HITBOX = (35, 42)
+ENEMY_HITBOXES = [(28, 22), (28, 22), (28, 22), (22, 22)]
+BOSS_HITBOX_LASER = (88, 52)
+BOSS_HITBOX_BODY = (80, 46)
+
+powerup_colors = {
+    "double": (60, 220, 255),
+    "spread": (255, 210, 70),
+    "rapid": (95, 255, 120),
+    "heavy": (255, 95, 210),
+}
+
+player_colors = {
+    "W": (235, 245, 255),
+    "L": (140, 235, 255),
+    "C": (40, 170, 220),
+    "D": (16, 80, 150),
+    "G": (24, 110, 160),
+    "A": (255, 150, 30),
+}
+
+player_rows_center = [
+    "........W........",
+    ".......WLW.......",
+    ".......LCL.......",
+    "......LLCLL......",
+    "......LCCCL......",
+    ".....LCGGGCL.....",
+    ".....LCGWGCL.....",
+    ".....LCGGGCL.....",
+    "....LCCDDDCCL....",
+    "....LCCCCCCCL....",
+    "...LCCCCCCCCCL...",
+    "..LCCDCCCCCDCCL..",
+    ".LCCDDCCCCCDDCCL.",
+    "LCCDD.DCCCD.DDCCL",
+    "LCD...DDDDD...DCL",
+    "LD....DAAAD....DL",
+    "......DAAAD......",
+    ".......AAA.......",
+]
+
+player_rows_left = player_rows_center[:11] + [
+    "...DCDCCCCCDCCL..",
+    "..DCDDCCCCCDDCCL.",
+    ".DCDD.DCCCD.DDCCL",
+    ".DD...DDDDD...DCL",
+    ".D....DAAAD....DL",
+    "......DAAAD......",
+    ".......AAA.......",
+]
+
+player_rows_right = [row[::-1] for row in player_rows_left]
+
+player_sprite = make_pixel_sprite(player_rows_center, player_colors, 3)
+player_sprite_left = make_pixel_sprite(player_rows_left, player_colors, 3)
+player_sprite_right = make_pixel_sprite(player_rows_right, player_colors, 3)
+player_flash_center = make_flash_sprite(player_sprite)
+player_flash_left = make_flash_sprite(player_sprite_left)
+player_flash_right = make_flash_sprite(player_sprite_right)
+player_preview_sprite = make_pixel_sprite(player_rows_center, player_colors, 8)
+
+flame_rows_a = [
+    ".WWW.",
+    "YWWWY",
+    "YYOYY",
+    ".YOY.",
+    ".ROR.",
+    "..R..",
+]
+flame_rows_b = [
+    "WWWWW",
+    "YWWWY",
+    ".YYY.",
+    ".YOY.",
+    "..R..",
+    ".....",
+]
+
+
+def make_flame_frames(color):
+    flame_palette = {
+        "W": (255, 255, 255),
+        "Y": mix_color(color, (255, 255, 255), 0.45),
+        "O": color,
+        "R": mix_color(color, (40, 10, 10), 0.45),
+    }
+    return (
+        make_pixel_sprite(flame_rows_a, flame_palette, 3, outline=False),
+        make_pixel_sprite(flame_rows_b, flame_palette, 3, outline=False),
+    )
+
+
+flame_frames = {"single": make_flame_frames((255, 150, 30))}
+for weapon_name, weapon_color in powerup_colors.items():
+    flame_frames[weapon_name] = make_flame_frames(weapon_color)
+
+diver_colors = {
+    "M": (210, 42, 62),
+    "R": (120, 20, 40),
+    "L": (255, 130, 120),
+    "K": (35, 26, 46),
+    "G": (95, 240, 135),
+    "A": (255, 140, 40),
+}
+diver_rows_a = [
+    "......MM......",
+    ".....MLLM.....",
+    "....MLLLLM....",
+    "...MLKKKKLM...",
+    "..MLKGGGGKLM..",
+    ".MMLKGGGGKLMM.",
+    "MM.RKKKKKKR.MM",
+    "M..MRKKKKRM..M",
+    "...MRRRRRRM...",
+    "....MRAARM....",
+    ".....AAAA.....",
+    "......AA......",
+]
+diver_rows_b = diver_rows_a[:-2] + [
+    "....AA..AA....",
+    ".....AAAA.....",
+]
+
+weaver_colors = {
+    "B": (30, 60, 160),
+    "C": (62, 190, 235),
+    "L": (160, 235, 255),
+    "W": (235, 250, 255),
+    "P": (70, 40, 120),
+    "Q": (255, 60, 170),
+    "A": (255, 140, 40),
+}
+weaver_rows_a = [
+    ".....BLLB.....",
+    "....BLWWLB....",
+    "...BLLLLLLB...",
+    ".BBCCCCCCCCBB.",
+    "BCPPQQPPQQPPCB",
+    ".BBCCCCCCCCBB.",
+    "..BBBCCCCBBB..",
+    "....BBBBBB....",
+    "....BB..BB....",
+    "....AA..AA....",
+    ".....A..A.....",
+]
+weaver_rows_b = weaver_rows_a[:-2] + [
+    "....A....A....",
+    "....AA..AA....",
+]
+
+tank_colors = {
+    "S": (170, 175, 192),
+    "L": (220, 225, 238),
+    "N": (75, 78, 96),
+    "V": (165, 60, 220),
+    "H": (255, 78, 92),
+    "W": (235, 245, 255),
+    "A": (255, 140, 40),
+}
+tank_rows_a = [
+    "..NSSSSSSSSN..",
+    ".NSLLSSSSLLSN.",
+    "NSSVVVVVVVVSSN",
+    "NSVVHHHHHHVVSN",
+    "NSVHHWWWWHHVSN",
+    "NSVVHHHHHHVVSN",
+    "NSSVVVVVVVVSSN",
+    ".NSSNNNNNNSSN.",
+    "..NNSSSSSSNN..",
+    "...NNLLLLNN...",
+    "....AA..AA....",
+    "...AAA..AAA...",
+]
+tank_rows_b = tank_rows_a[:-2] + [
+    "...AAA..AAA...",
+    "....AA..AA....",
+]
+
+kamikaze_colors = {
+    "O": (255, 150, 40),
+    "K": (60, 30, 20),
+    "W": (255, 220, 120),
+    "A": (255, 70, 30),
+}
+kamikaze_rows_a = [
+    ".....OO.....",
+    ".O..OKKO..O.",
+    "..OOKWWKOO..",
+    ".OKWWAAWWKO.",
+    "OKWAAAAAAWKO",
+    "OKWAAKKAAWKO",
+    "OKWAAKKAAWKO",
+    "OKWAAAAAAWKO",
+    ".OKWWAAWWKO.",
+    "..OOKWWKOO..",
+    ".O..OKKO..O.",
+    ".....OO.....",
+]
+kamikaze_rows_b = [
+    "...O....O...",
+    "....OKKO....",
+] + kamikaze_rows_a[2:10] + [
+    "....OKKO....",
+    "...O....O...",
+]
 
 enemy_sprites = [
-    make_pixel_sprite(
-        [
-            "....RRRR....",
-            "..RRMMMMRR..",
-            ".RMMYYYYMMR.",
-            "RMMYKKKKYMMR",
-            "RMYKKGGKKYMR",
-            "RMYKGGGGKYMR",
-            ".RMYKKKKYMR.",
-            "..RRYYYYRR..",
-            "...RRAARR...",
-            "....AAAA....",
-        ],
-        {
-            "R": (210, 42, 62),
-            "M": (92, 35, 115),
-            "Y": (245, 198, 75),
-            "K": (38, 30, 52),
-            "G": (95, 240, 135),
-            "A": (255, 118, 40),
-        },
-        3,
-    ),
-    make_pixel_sprite(
-        [
-            "....BBBB....",
-            "..BBCCCCBB..",
-            ".BCCWWWWCCB.",
-            "BCCWPPPPWCCB",
-            "BCWPPQQPPWCB",
-            "BCWPPQQPPWCB",
-            ".BCCWWWWCCB.",
-            "..BBCCCCBB..",
-            ".BB..AA..BB.",
-            ".....AA.....",
-        ],
-        {
-            "B": (45, 85, 215),
-            "C": (62, 220, 245),
-            "W": (235, 250, 255),
-            "P": (80, 42, 130),
-            "Q": (255, 60, 170),
-            "A": (255, 126, 36),
-        },
-        3,
-    ),
-    make_pixel_sprite(
-        [
-            ".....SS.....",
-            "...SSNNSS...",
-            "..SNNVVNNS..",
-            ".SNNVHHVNNS.",
-            "SNNVHHHHVNNS",
-            "SNNVHHHHVNNS",
-            ".SNNVHHVNNS.",
-            "..SSNVNSS..",
-            "...SSLLSS...",
-            "....LLLL....",
-        ],
-        {
-            "S": (170, 175, 192),
-            "N": (75, 78, 96),
-            "V": (185, 55, 230),
-            "H": (255, 78, 92),
-            "L": (255, 164, 38),
-        },
-        3,
-    ),
-    make_pixel_sprite(
-        [
-            "....OO....",
-            ".O.OKKO.O.",
-            "..OKWWKO..",
-            ".OKWAAWKO.",
-            "OKWAAAAWKO",
-            "OKWAAAAWKO",
-            ".OKWAAWKO.",
-            "..OKWWKO..",
-            ".O.OKKO.O.",
-            "....OO....",
-        ],
-        {
-            "O": (255, 150, 40),
-            "K": (35, 28, 30),
-            "W": (255, 220, 120),
-            "A": (255, 70, 30),
-        },
-        3,
-    ),
+    (make_pixel_sprite(diver_rows_a, diver_colors, 3), make_pixel_sprite(diver_rows_b, diver_colors, 3)),
+    (make_pixel_sprite(weaver_rows_a, weaver_colors, 3), make_pixel_sprite(weaver_rows_b, weaver_colors, 3)),
+    (make_pixel_sprite(tank_rows_a, tank_colors, 3), make_pixel_sprite(tank_rows_b, tank_colors, 3)),
+    (make_pixel_sprite(kamikaze_rows_a, kamikaze_colors, 3), make_pixel_sprite(kamikaze_rows_b, kamikaze_colors, 3)),
 ]
+enemy_flash_sprites = tuple(make_flash_sprite(frame, (255, 60, 60, 130)) for frame in enemy_sprites[3])
+
+def make_boss_frames(half_rows, colors, pulse_keys):
+    rows = mirror_rows(half_rows)
+    frame_a = make_pixel_sprite(rows, colors, 4)
+    colors_b = dict(colors)
+    for key in pulse_keys:
+        colors_b[key] = mix_color(colors[key], (255, 255, 255), 0.45)
+    frame_b = make_pixel_sprite(rows, colors_b, 4)
+    return (frame_a, frame_b)
+
+
+carrier_half_rows = [
+    ".............MM",
+    "............MLL",
+    "...........MLLL",
+    "..........MLYYY",
+    ".........MLYKKK",
+    "........MLYKKKK",
+    ".......MLYKGGKK",
+    "......MLYKGGGGK",
+    ".....MLYKKGGKKK",
+    "....MLYKKKKKKKW",
+    "...MLYKKKKKWKWK",
+    "..MLYKKKKKKWKWK",
+    ".MLLYKKKKKKKKKK",
+    "MLLYYPPPPPPPPPP",
+    "MLLYPPPPPPPPPPP",
+    "..MLYPPPAAAPPPP",
+    "....MLYPAAAPPPP",
+    "......MMPPAAAPP",
+]
+carrier_colors = {
+    "M": (210, 48, 62),
+    "R": (130, 22, 40),
+    "L": (255, 140, 130),
+    "Y": (240, 190, 70),
+    "K": (28, 22, 40),
+    "G": (95, 240, 135),
+    "W": (235, 245, 255),
+    "P": (100, 35, 118),
+    "A": (255, 130, 40),
+}
+
+wheel_half_rows = [
+    "............BBB",
+    "..........BCCCC",
+    ".........BCCCCC",
+    "........BCPPPPC",
+    ".......BCPPPPPC",
+    ".......BCPCPPPC",
+    "......BCPPCPPPC",
+    "......BCPPPCQQQ",
+    "......BCCCCCQWQ",
+    "......BCCCCCQWQ",
+    "......BCPPPCQQQ",
+    "......BCPPCPPPC",
+    ".......BCPCPPPC",
+    ".......BCPPPPPC",
+    "........BCPPPPC",
+    ".........BCCCCC",
+    "..........BCCCC",
+    "............BAA",
+]
+wheel_colors = {
+    "B": (30, 60, 170),
+    "C": (70, 200, 240),
+    "P": (75, 40, 135),
+    "Q": (255, 70, 180),
+    "W": (235, 250, 255),
+    "A": (255, 140, 40),
+}
+
+prism_half_rows = [
+    ".......NN......",
+    ".......NSN.....",
+    "......NSSSN....",
+    ".....NSVVVSN...",
+    "....NSVVHVVSN..",
+    "...NSVVHHHVVSN.",
+    "..NSVVHHWHHVVSN",
+    ".NSVVHHWWWHHVVS",
+    "NSVVHHWWWWHHVSS",
+    ".NSVVHHWWWHHVVS",
+    "..NSVVHHWHHVVSN",
+    "...NSVVHHHVVSN.",
+    "....NSVVHVVSN..",
+    ".....NSVVVSN...",
+    "......NSSSN....",
+    ".......NSN.....",
+    ".......NAN.....",
+    ".......AAA.....",
+]
+prism_colors = {
+    "S": (185, 190, 205),
+    "N": (65, 70, 90),
+    "V": (175, 60, 230),
+    "H": (255, 90, 160),
+    "W": (245, 250, 255),
+    "A": (255, 140, 40),
+}
+
+fortress_half_rows = [
+    "..BBB.....BBB..",
+    "..BTB.....BTB..",
+    "..BBB.....BBB..",
+    ".GGEGGGGGGGEGGG",
+    "GLLLLLLLLLLLLLL",
+    "GLEEEEEEEEEEEEE",
+    "GLEOOOOOOOOOOOO",
+    "GLEOBBBBBBBBBBB",
+    "GLEOBTTTWTTTTBB",
+    "GLEOBTTTTTTTTBB",
+    "GLEOBBBBBBBBBBB",
+    "GLEOOOOOOOOOOOO",
+    "GLEEEEEEEEEEEEE",
+    "GGLLLLLLLLLLLLL",
+    ".GGEGGGGGGGEGGG",
+    "...AA....AA....",
+    "...AA....AA....",
+    "....A.....A....",
+]
+fortress_colors = {
+    "G": (60, 200, 95),
+    "E": (24, 90, 55),
+    "L": (160, 255, 170),
+    "O": (245, 190, 65),
+    "B": (35, 38, 55),
+    "T": (80, 255, 200),
+    "W": (235, 250, 255),
+    "A": (255, 135, 40),
+}
+
+crown_half_rows = [
+    ".P....P....P...",
+    ".P....P....P...",
+    ".PF...PF...PF..",
+    ".PFP..PFP..PFP.",
+    ".PFFP.PFFP.PFFP",
+    "NPFFPNPFFPNPFFP",
+    "NPPPPPPPPPPPPPP",
+    "NPFEEEEEEEEEEEE",
+    "NPFENNNNNNKKKKK",
+    "NPFENNNNNEKKKKK",
+    "NPFENNNNNEKKWKK",
+    "NPFENNNNNEKKKKK",
+    "NPFENNNNNNKKKKK",
+    "NPFEEEEEEEEEEEE",
+    "NPPPPPPPPPPPPPP",
+    ".NPPFFFFFFFFFFF",
+    "...NPPPAAAPPPPP",
+    "......NPPAAAPPP",
+]
+crown_colors = {
+    "P": (195, 70, 255),
+    "N": (45, 38, 72),
+    "F": (255, 90, 190),
+    "E": (255, 230, 85),
+    "K": (12, 10, 20),
+    "W": (245, 250, 255),
+    "A": (255, 105, 45),
+}
 
 boss_sprites = [
-    make_pixel_sprite(
-        [
-            ".......RRRRR.......",
-            ".....RRMMMMMRR.....",
-            "...RRMMYYYYYMMRR...",
-            "..RMMYYKKKKKYYMMR..",
-            ".RMMYKGGGGGGGKYMMR.",
-            "RMMYKGGWWWWGGKYMMR",
-            "RMMYKGWCCCCWGKYMMR",
-            ".RMMYKGGWWGGKYMMR.",
-            "..RRMMYKKKKKYMMRR..",
-            "....RRRRAARRRR....",
-            "......AAAAAAA......",
-        ],
-        {
-            "R": (210, 48, 54),
-            "M": (100, 35, 118),
-            "Y": (240, 190, 70),
-            "K": (30, 24, 42),
-            "G": (80, 240, 140),
-            "W": (235, 250, 255),
-            "C": (70, 180, 255),
-            "A": (255, 120, 35),
-        },
-        3,
-    ),
-    make_pixel_sprite(
-        [
-            ".......BBBBB.......",
-            ".....BBCCCCCB......",
-            "...BBCCWWWWWCCBB...",
-            "..BCCWPPPPPPPWCCB..",
-            ".BCCWPQQQQQQQPWCCB.",
-            "BCCWPQRRRRRRQPWCCB",
-            "BCCWPQRRRRRRQPWCCB",
-            ".BCCWPQQQQQQQPWCCB.",
-            "..BBCCWPPPPPWCCBB..",
-            "....BBCCCCCCCBB....",
-            "......BBBAABBB.....",
-        ],
-        {
-            "B": (40, 85, 230),
-            "C": (70, 220, 245),
-            "W": (235, 250, 255),
-            "P": (75, 40, 135),
-            "Q": (255, 70, 180),
-            "R": (255, 60, 60),
-            "A": (255, 140, 40),
-        },
-        3,
-    ),
-    make_pixel_sprite(
-        [
-            "......SSSSSSS......",
-            "....SSNNNNNNNSS....",
-            "..SSNNVVVVVVVNNSS..",
-            ".SNNVVHHHHHHHVVNNS.",
-            "SNNVVHLLLLLLLHVVNNS",
-            "SNNVVHLLWWWLLHVVNNS",
-            "SNNVVHLLLLLLLHVVNNS",
-            ".SNNVVHHHHHHHVVNNS.",
-            "..SSNNVVVVVVVNNSS..",
-            "....SSNNLLLNNSS....",
-            "......LLLLLLL......",
-        ],
-        {
-            "S": (185, 190, 205),
-            "N": (65, 70, 90),
-            "V": (175, 60, 230),
-            "H": (255, 80, 95),
-            "L": (255, 170, 45),
-            "W": (235, 245, 255),
-        },
-        3,
-    ),
-    make_pixel_sprite(
-        [
-            ".......GGGGG.......",
-            "....GGGDDDDDGGG....",
-            "..GGDDOOOOOOODDGG..",
-            ".GDDOOBBBBBBBOODDG.",
-            "GDDOBBTTTTTTTBBODDG",
-            "GDDOBBTWWWWWTTBODDG",
-            "GDDOBBTTTTTTTBBODDG",
-            ".GDDOOBBBBBBBOODDG.",
-            "..GGDDOOOOOOODDGG..",
-            "....GGGDDDDDGGG....",
-            "......GGAAAAAG.....",
-        ],
-        {
-            "G": (55, 210, 90),
-            "D": (30, 85, 70),
-            "O": (245, 190, 65),
-            "B": (35, 38, 55),
-            "T": (80, 255, 200),
-            "W": (235, 250, 255),
-            "A": (255, 135, 40),
-        },
-        3,
-    ),
-    make_pixel_sprite(
-        [
-            ".......PPPPP.......",
-            "....PPPNNNNNPPP....",
-            "..PPNNFFFFFFFNNPP..",
-            ".PNNFFEEEEEEEFFNNP.",
-            "PNNFFEKKKKKKKEFFNNP",
-            "PNNFFEKWWWWWKEFFNNP",
-            "PNNFFEKKKKKKKEFFNNP",
-            ".PNNFFEEEEEEEFFNNP.",
-            "..PPNNFFFFFFFNNPP..",
-            "....PPPNNNNNPPP....",
-            "......PPAAAAAPP....",
-        ],
-        {
-            "P": (195, 70, 255),
-            "N": (45, 38, 72),
-            "F": (255, 90, 190),
-            "E": (255, 230, 85),
-            "K": (20, 20, 34),
-            "W": (245, 250, 255),
-            "A": (255, 105, 45),
-        },
-        3,
-    ),
+    make_boss_frames(carrier_half_rows, carrier_colors, ["G", "W"]),
+    make_boss_frames(wheel_half_rows, wheel_colors, ["Q", "W"]),
+    make_boss_frames(prism_half_rows, prism_colors, ["H", "W"]),
+    make_boss_frames(fortress_half_rows, fortress_colors, ["T", "W"]),
+    make_boss_frames(crown_half_rows, crown_colors, ["E", "W"]),
 ]
+boss_flash_sprites = [make_flash_sprite(frames[0], (255, 255, 255, 90)) for frames in boss_sprites]
+
+bolt_colors = {"single": (255, 255, 0)}
+bolt_colors.update(powerup_colors)
+
+bolt_rows_a = [".C.", "CWC", "CWC", "CWC", "CWC", ".C.", ".D."]
+bolt_rows_b = [".W.", "CWC", "CCC", "CWC", "CCC", ".C.", ".D."]
+heavy_bolt_rows_a = ["..C..", ".CWC.", "CWWWC", "CWWWC", "CWWWC", "CWWWC", ".CWC.", ".CDC.", "..D.."]
+heavy_bolt_rows_b = ["..W..", ".CWC.", "CWWWC", "CWCWC", "CWWWC", "CWCWC", ".CWC.", ".CDC.", "..D.."]
+
+
+def make_bolt_frames(color, heavy=False):
+    bolt_palette = {"W": (255, 255, 255), "C": color, "D": mix_color(color, (20, 16, 40), 0.5)}
+    rows_pair = (heavy_bolt_rows_a, heavy_bolt_rows_b) if heavy else (bolt_rows_a, bolt_rows_b)
+    return tuple(make_pixel_sprite(rows, bolt_palette, 3) for rows in rows_pair)
+
+
+bolt_sprites = {}
+for weapon_name, weapon_color in bolt_colors.items():
+    bolt_sprites[weapon_name] = make_bolt_frames(weapon_color, heavy=(weapon_name == "heavy"))
+
+spread_bolt_sprites = {
+    -1: tuple(pygame.transform.rotate(frame, 17) for frame in bolt_sprites["spread"]),
+    1: tuple(pygame.transform.rotate(frame, -17) for frame in bolt_sprites["spread"]),
+}
+
+enemy_bullet_palette = {"R": (255, 60, 90), "P": (255, 150, 180), "W": (255, 240, 245)}
+enemy_bullet_frames = (
+    make_pixel_sprite([".RRR.", "RPPPR", "RPWPR", "RPPPR", ".RRR."], enemy_bullet_palette, 3),
+    make_pixel_sprite([".RRR.", "RPWPR", "RWWWR", "RPWPR", ".RRR."], enemy_bullet_palette, 3),
+)
+
+muzzle_rows = [
+    ["...C...", "...W...", ".C.W.C.", "CWWWWWC", ".C.W.C.", "...W...", "...C..."],
+    ["..C..", ".CWC.", "CWWWC", ".CWC.", "..C.."],
+    [".C.", "CWC", ".C."],
+]
+
+
+def make_muzzle_frames(color):
+    muzzle_palette = {"W": (255, 255, 255), "C": color}
+    return [make_pixel_sprite(rows, muzzle_palette, 3, outline=False) for rows in muzzle_rows]
+
+
+muzzle_flash_sprites = {"single": make_muzzle_frames((255, 230, 120))}
+for weapon_name, weapon_color in powerup_colors.items():
+    muzzle_flash_sprites[weapon_name] = make_muzzle_frames(weapon_color)
+
+powerup_glyphs = {
+    "double": ["WW.", "W.W", "W.W", "W.W", "WW."],
+    "spread": [".WW", "W..", ".W.", "..W", "WW."],
+    "rapid": ["WW.", "W.W", "WW.", "W.W", "W.W"],
+    "heavy": ["W.W", "W.W", "WWW", "W.W", "W.W"],
+}
+
+
+def make_powerup_frames(color, glyph):
+    rows = []
+    for y in range(11):
+        row = ""
+        for x in range(11):
+            span = abs(x - 5) + abs(y - 5)
+            if span > 5:
+                row += "."
+            elif span == 5:
+                row += "M"
+            elif x <= 5 and y <= 5 and span >= 3:
+                row += "L"
+            else:
+                row += "F"
+        rows.append(row)
+    for glyph_y, glyph_row in enumerate(glyph):
+        row = list(rows[3 + glyph_y])
+        for glyph_x, glyph_pixel in enumerate(glyph_row):
+            if glyph_pixel == "W":
+                row[4 + glyph_x] = "K"
+        rows[3 + glyph_y] = "".join(row)
+    powerup_palette = {
+        "M": mix_color(color, (20, 16, 40), 0.4),
+        "L": mix_color(color, (255, 255, 255), 0.55),
+        "F": color,
+        "K": (16, 14, 28),
+    }
+    full = make_pixel_sprite(rows, powerup_palette, 3)
+    width, height = full.get_size()
+    frames = [full]
+    for squash in (0.7, 0.35, 0.7):
+        frames.append(pygame.transform.scale(full, (max(3, int(width * squash)), height)))
+    return frames
+
+
+powerup_sprites = {name: make_powerup_frames(powerup_colors[name], powerup_glyphs[name]) for name in powerup_glyphs}
+
+explosion_frames = {
+    "small": make_explosion_frames(12, 4),
+    "large": make_explosion_frames(16, 5),
+    "boss": make_explosion_frames(24, 6),
+}
 
 stages = [
     {"name": "Stage 1: Sky Patrol", "boss": "Carrier Fang", "goal": 120, "spawn_delay": 62, "speed": 0, "fire_roll": 170, "color": (5, 8, 24), "boss_hp": 180},
@@ -1089,6 +1546,59 @@ stages = [
     {"name": "Stage 4: Green Monsoon", "boss": "Iron Monsoon", "goal": 300, "spawn_delay": 42, "speed": 2, "fire_roll": 105, "color": (5, 20, 14), "boss_hp": 350},
     {"name": "Stage 5: Event Horizon", "boss": "Singularity Crown", "goal": 380, "spawn_delay": 36, "speed": 3, "fire_roll": 85, "color": (12, 4, 22), "boss_hp": 430},
 ]
+
+stage_accents = [(70, 110, 220), (220, 70, 130), (60, 180, 220), (70, 200, 120), (170, 70, 230)]
+planet_palettes = [
+    [(40, 60, 110), (90, 130, 200), (150, 190, 240)],
+    [(95, 30, 30), (180, 80, 50), (230, 140, 90)],
+    [(40, 70, 90), (90, 170, 200), (170, 230, 245)],
+    [(25, 80, 45), (60, 150, 80), (120, 210, 130)],
+    [(10, 8, 16), (30, 22, 44), (60, 45, 85)],
+]
+planet_positions = [(560, 80), (90, 110), (470, 60), (120, 70), (270, 60)]
+
+stage_backgrounds = []
+for stage_index, stage in enumerate(stages):
+    background = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+    base_color = stage["color"]
+    band_height = SCREEN_HEIGHT // 4
+    for band in range(4):
+        band_color = (
+            min(255, base_color[0] + band * 3),
+            min(255, base_color[1] + band * 3),
+            min(255, base_color[2] + band * 4),
+        )
+        background.fill(band_color, (0, band * band_height, SCREEN_WIDTH, band_height))
+    background.blit(make_nebula(stage_accents[stage_index], stage_index * 31 + 7), (0, 0))
+    planet_ring_color = (255, 160, 60) if stage_index == 4 else None
+    planet = make_planet(16 + stage_index * 2, planet_palettes[stage_index], stage_index * 13 + 3, planet_ring_color)
+    background.blit(planet, planet_positions[stage_index])
+    stage_backgrounds.append(background.convert())
+
+game_over_background = stage_backgrounds[-1].copy()
+game_over_dim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+game_over_dim.fill((0, 0, 0))
+game_over_dim.set_alpha(160)
+game_over_background.blit(game_over_dim, (0, 0))
+
+scanline_overlay = make_scanline_overlay()
+
+warning_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+warning_overlay.fill((255, 30, 30))
+milestone_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+milestone_overlay.fill((255, 255, 255))
+pause_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+pause_overlay.fill((0, 0, 0))
+pause_overlay.set_alpha(110)
+
+vignette_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+for vignette_rect in [
+    (0, 0, SCREEN_WIDTH, 26),
+    (0, SCREEN_HEIGHT - 26, SCREEN_WIDTH, 26),
+    (0, 0, 26, SCREEN_HEIGHT),
+    (SCREEN_WIDTH - 26, 0, 26, SCREEN_HEIGHT),
+]:
+    pygame.draw.rect(vignette_overlay, (255, 30, 30, 65), vignette_rect)
 
 player_x = 400
 player_y = 520
@@ -1106,14 +1616,23 @@ orbit_speed_degrees_per_second = 35.0
 orbit_angle = -math.pi / 2
 black_hole_crash = False
 
-stars = []
-for i in range(140):
-    star_x = random.randint(0, SCREEN_WIDTH)
-    star_y = random.randint(0, SCREEN_HEIGHT)
-    star_speed = random.choice([1, 1, 2, 3])
-    star_size = 2 if star_speed == 3 else 1
-    star_color = random.choice([(160, 175, 210), (210, 225, 255), (255, 255, 255)])
-    stars.append([star_x, star_y, star_speed, star_size, star_color])
+star_layers = []
+for layer_speed, layer_count, layer_size, layer_colors, layer_depth in [
+    (0.4, 70, 1, ((110, 120, 150), (80, 90, 115)), 0.3),
+    (1.2, 50, 2, ((180, 195, 225), (140, 155, 190)), 0.6),
+    (2.8, 30, 3, ((255, 255, 255), (150, 200, 255)), 1.0),
+]:
+    layer_stars = [
+        [random.randint(0, SCREEN_WIDTH), random.randint(0, SCREEN_HEIGHT), random.randint(0, 6)]
+        for _ in range(layer_count)
+    ]
+    star_layers.append({
+        "speed": layer_speed,
+        "size": layer_size,
+        "colors": layer_colors,
+        "depth": layer_depth,
+        "stars": layer_stars,
+    })
 
 lasers = []
 laser_speed = 10
@@ -1128,18 +1647,6 @@ active_weapon = "single"
 weapon_timer = 0
 weapon_duration = 600
 weapon_types = ["double", "spread", "rapid", "heavy"]
-powerup_colors = {
-    "double": (60, 220, 255),
-    "spread": (255, 210, 70),
-    "rapid": (95, 255, 120),
-    "heavy": (255, 95, 210),
-}
-powerup_labels = {
-    "double": "D",
-    "spread": "S",
-    "rapid": "R",
-    "heavy": "H",
-}
 special_move_names = {
     "double": "TWIN COMET",
     "spread": "STARFALL FAN",
@@ -1158,6 +1665,7 @@ enemy_bullets = []
 enemy_bullet_speed = 4
 
 particles = []
+explosions = []
 score_popups = []
 shockwaves = []
 screen_shake_timer = 0
@@ -1290,11 +1798,12 @@ while app_running:
                 fire_player_weapon()
                 fire_timer = 0
 
-            for star in stars:
-                star[1] = star[1] + star[2]
-                if star[1] > SCREEN_HEIGHT:
-                    star[1] = 0
-                    star[0] = random.randint(0, SCREEN_WIDTH)
+            for layer in star_layers:
+                for star in layer["stars"]:
+                    star[1] = star[1] + layer["speed"]
+                    if star[1] > SCREEN_HEIGHT:
+                        star[1] = 0
+                        star[0] = random.randint(0, SCREEN_WIDTH)
 
             powerup_timer = powerup_timer + 1
             if powerup_timer >= powerup_spawn_delay:
@@ -1368,7 +1877,7 @@ while app_running:
                     enemy[1] = enemy[1] + current_enemy_speed * 1.7
 
                 if enemy[1] > 20:
-                    bullet_y = enemy[1] + enemy_sprites[enemy[2]].get_height() // 2
+                    bullet_y = enemy[1] + enemy_sprites[enemy[2]][0].get_height() // 2
                     if enemy[2] == 1 and random.randint(1, enemy_fire_roll + 40) == 1:
                         aim_x = player_x - enemy[0]
                         aim_y = player_y - bullet_y
@@ -1402,6 +1911,13 @@ while app_running:
                     new_particles.append(particle)
             particles = new_particles
 
+            new_explosions = []
+            for explosion in explosions:
+                explosion[2] = explosion[2] + 1
+                if explosion[2] < 21:
+                    new_explosions.append(explosion)
+            explosions = new_explosions
+
             new_shockwaves = []
             for shockwave in shockwaves:
                 shockwave[2] = shockwave[2] + 7
@@ -1426,8 +1942,7 @@ while app_running:
 
                 surviving_enemies = []
                 for enemy in enemies:
-                    enemy_sprite = enemy_sprites[enemy[2]]
-                    enemy_rect = enemy_sprite.get_rect(center=(enemy[0], enemy[1])).inflate(-8, -8)
+                    enemy_rect = hitbox_rect(enemy[0], enemy[1], ENEMY_HITBOXES[enemy[2]])
                     if laser_rect.colliderect(enemy_rect):
                         hit_something = True
                         enemy[3] = enemy[3] - get_laser_damage(laser)
@@ -1439,6 +1954,7 @@ while app_running:
                             score = score + points
                             stage_score = stage_score + base_points
                             enemy_hit_sound.play()
+                            add_explosion(enemy[0], enemy[1], "large" if enemy[2] == 2 else "small")
                             add_particles(enemy[0], enemy[1], powerup_colors.get(laser[4], (255, 220, 60)), 24, 4, 32, 4)
                             add_particles(enemy[0], enemy[1], (255, 130, 55), 10, 5, 24, 3)
                             add_shockwave(enemy[0], enemy[1], 34, powerup_colors.get(laser[4], (255, 220, 60)))
@@ -1453,8 +1969,7 @@ while app_running:
                 enemies = surviving_enemies
 
                 if boss is not None and "dying" not in boss:
-                    boss_sprite = boss_sprites[boss["stage"]]
-                    boss_rect = boss_sprite.get_rect(center=(boss["x"], boss["y"])).inflate(-14, -10)
+                    boss_rect = hitbox_rect(boss["x"], boss["y"], BOSS_HITBOX_LASER)
                     if laser_rect.colliderect(boss_rect):
                         hit_something = True
                         damage_boss(laser)
@@ -1467,7 +1982,7 @@ while app_running:
                     surviving_lasers.append(laser)
             lasers = surviving_lasers
 
-            player_rect = player_sprite.get_rect(center=(player_x, player_y)).inflate(-10, -6)
+            player_rect = hitbox_rect(player_x, player_y, PLAYER_HITBOX)
 
             surviving_powerups = []
             for powerup in powerups:
@@ -1489,18 +2004,17 @@ while app_running:
 
             surviving_enemies = []
             for enemy in enemies:
-                enemy_sprite = enemy_sprites[enemy[2]]
-                enemy_rect = enemy_sprite.get_rect(center=(enemy[0], enemy[1])).inflate(-8, -8)
+                enemy_rect = hitbox_rect(enemy[0], enemy[1], ENEMY_HITBOXES[enemy[2]])
                 if player_rect.colliderect(enemy_rect):
                     damage_player()
                     add_particles(enemy[0], enemy[1], (255, 120, 60), 20, 5, 28, 4)
+                    add_explosion(enemy[0], enemy[1], "small")
                 else:
                     surviving_enemies.append(enemy)
             enemies = surviving_enemies
 
             if boss is not None and "dying" not in boss:
-                boss_sprite = boss_sprites[boss["stage"]]
-                boss_rect = boss_sprite.get_rect(center=(boss["x"], boss["y"])).inflate(-20, -12)
+                boss_rect = hitbox_rect(boss["x"], boss["y"], BOSS_HITBOX_BODY)
                 if player_rect.colliderect(boss_rect):
                     damage_player()
                     add_particles(player_x, player_y, (255, 100, 120), 24, 5, 28, 4)
@@ -1608,162 +2122,159 @@ while app_running:
             world_offset_x = random.randint(-screen_shake_strength, screen_shake_strength)
             world_offset_y = random.randint(-screen_shake_strength, screen_shake_strength)
 
-        for star in stars:
-            pygame.draw.circle(screen, star[4], (int(star[0] + world_offset_x), int(star[1] + world_offset_y)), star[3])
+        draw_star_layers(world_offset_x, world_offset_y)
 
+        frame_tick = pygame.time.get_ticks()
+        bolt_frame = (frame_tick // 66) % 2
         for laser in lasers:
-            laser_color = powerup_colors.get(laser[4], (255, 255, 0))
-            laser_width = 9 if laser[4] == "heavy" else 5
-            laser_start = (laser[0] + world_offset_x, laser[1] + world_offset_y)
-            laser_end = (laser[0] + laser[2] * 4 + world_offset_x, laser[1] - 18 + world_offset_y)
-            pygame.draw.line(screen, (255, 255, 255), laser_start, laser_end, laser_width + 3)
-            pygame.draw.line(screen, laser_color, laser_start, laser_end, laser_width)
+            if laser[4] == "spread" and laser[2] != 0:
+                bolt_sprite = spread_bolt_sprites[1 if laser[2] > 0 else -1][bolt_frame]
+            else:
+                bolt_sprite = bolt_sprites[laser[4]][bolt_frame]
+            bolt_rect = bolt_sprite.get_rect(center=(laser[0] + world_offset_x, laser[1] + world_offset_y))
+            screen.blit(bolt_sprite, bolt_rect)
+            blit_glow(laser[0] + world_offset_x, laser[1] - 6 + world_offset_y, bolt_colors[laser[4]], 12)
 
+        orb_sprite = enemy_bullet_frames[(frame_tick // 100) % 2]
         for bullet in enemy_bullets:
-            bullet_start = (bullet[0] + world_offset_x, bullet[1] + world_offset_y)
-            bullet_end = (bullet[0] + bullet[2] * 3 + world_offset_x, bullet[1] + 14 + world_offset_y)
-            pygame.draw.line(screen, (255, 60, 90), bullet_start, bullet_end, 8)
-            pygame.draw.line(screen, (255, 190, 210), bullet_start, bullet_end, 3)
+            orb_rect = orb_sprite.get_rect(center=(bullet[0] + world_offset_x, bullet[1] + world_offset_y))
+            screen.blit(orb_sprite, orb_rect)
+            blit_glow(bullet[0] + world_offset_x, bullet[1] + world_offset_y, (255, 60, 90), 10)
 
         for enemy in enemies:
-            enemy_sprite = enemy_sprites[enemy[2]]
+            enemy_frame = (enemy[5] // 8) % 2
+            enemy_sprite = enemy_sprites[enemy[2]][enemy_frame]
             enemy_rect = enemy_sprite.get_rect(center=(enemy[0] + world_offset_x, enemy[1] + world_offset_y))
             screen.blit(enemy_sprite, enemy_rect)
             if enemy[2] == 3 and enemy[5] % 16 < 8:
-                flash_sprite = enemy_sprite.copy()
-                flash_sprite.fill((255, 60, 60, 130), special_flags=pygame.BLEND_RGBA_ADD)
-                screen.blit(flash_sprite, enemy_rect)
+                screen.blit(enemy_flash_sprites[enemy_frame], enemy_rect)
 
         draw_boss()
 
+        for explosion in explosions:
+            frame_set = explosion_frames[explosion[3]]
+            frame = frame_set[min(len(frame_set) - 1, explosion[2] // 3)]
+            screen.blit(frame, frame.get_rect(center=(explosion[0] + world_offset_x, explosion[1] + world_offset_y)))
+            if explosion[2] < 9:
+                blit_glow(explosion[0] + world_offset_x, explosion[1] + world_offset_y, (255, 160, 60), 30)
+
+        spin_frame = (frame_tick // 120) % 4
         for powerup in powerups:
-            powerup_color = powerup_colors[powerup[2]]
-            pulse = 16 + int(math.sin(pygame.time.get_ticks() / 120) * 3)
-            powerup_points = [
-                (powerup[0] + world_offset_x, powerup[1] - pulse + world_offset_y),
-                (powerup[0] + pulse + world_offset_x, powerup[1] + world_offset_y),
-                (powerup[0] + world_offset_x, powerup[1] + pulse + world_offset_y),
-                (powerup[0] - pulse + world_offset_x, powerup[1] + world_offset_y),
-            ]
-            pygame.draw.polygon(screen, powerup_color, powerup_points)
-            pygame.draw.polygon(screen, (255, 255, 255), powerup_points, 2)
-            powerup_text = font.render(powerup_labels[powerup[2]], True, (10, 10, 20))
-            powerup_text_rect = powerup_text.get_rect(center=(powerup[0] + world_offset_x, powerup[1] + world_offset_y))
-            screen.blit(powerup_text, powerup_text_rect)
+            blit_glow(powerup[0] + world_offset_x, powerup[1] + world_offset_y, powerup_colors[powerup[2]], 22)
+            powerup_sprite = powerup_sprites[powerup[2]][spin_frame]
+            powerup_rect = powerup_sprite.get_rect(center=(powerup[0] + world_offset_x, powerup[1] + world_offset_y))
+            screen.blit(powerup_sprite, powerup_rect)
 
         for particle in particles:
-            pygame.draw.circle(
-                screen,
-                particle[5],
-                (int(particle[0] + world_offset_x), int(particle[1] + world_offset_y)),
-                particle[6],
+            particle_color = particle[5] if particle[4] >= 8 else particle[7]
+            screen.fill(
+                particle_color,
+                (
+                    int(particle[0] + world_offset_x - particle[6]),
+                    int(particle[1] + world_offset_y - particle[6]),
+                    particle[6] * 2,
+                    particle[6] * 2,
+                ),
             )
 
         for shockwave in shockwaves:
-            pygame.draw.circle(screen, shockwave[4], (int(shockwave[0] + world_offset_x), int(shockwave[1] + world_offset_y)), int(shockwave[2]), 3)
+            shockwave_radius = max(3, int(shockwave[2] // 3) * 3)
+            shockwave_center = (int(shockwave[0] + world_offset_x), int(shockwave[1] + world_offset_y))
+            pygame.draw.circle(screen, shockwave[4], shockwave_center, shockwave_radius, 3)
+            if shockwave_radius > 6:
+                pygame.draw.circle(screen, (255, 255, 255), shockwave_center, shockwave_radius - 4, 1)
 
         if muzzle_flash_timer > 0:
             nose_x = int(player_x + world_offset_x)
             nose_y = int(player_y - player_sprite.get_height() // 2 + world_offset_y)
-            halo_color = powerup_colors.get(active_weapon, (255, 230, 120))
-            pygame.draw.circle(screen, halo_color, (nose_x, nose_y), 4 + muzzle_flash_timer * 2)
-            pygame.draw.circle(screen, (255, 255, 255), (nose_x, nose_y), 2 + muzzle_flash_timer)
+            flash_frames = muzzle_flash_sprites.get(active_weapon, muzzle_flash_sprites["single"])
+            flash_sprite = flash_frames[max(0, 3 - muzzle_flash_timer)]
+            screen.blit(flash_sprite, flash_sprite.get_rect(center=(nose_x, nose_y)))
+            blit_glow(nose_x, nose_y, bolt_colors.get(active_weapon, (255, 230, 120)), 14)
 
-        engine_y = player_y + player_sprite.get_height() // 2 - 5
-        engine_color = powerup_colors.get(active_weapon, (255, 150, 30))
-        pygame.draw.circle(screen, engine_color, (int(player_x + world_offset_x), int(engine_y + world_offset_y)), 8)
-        pygame.draw.circle(screen, (255, 230, 120), (int(player_x + world_offset_x), int(engine_y + world_offset_y)), 4)
+        flame_pair = flame_frames.get(active_weapon, flame_frames["single"])
+        flame_sprite = flame_pair[(frame_tick // 66) % 2]
+        flame_x = int(player_x + world_offset_x)
+        flame_y = int(player_y + player_sprite.get_height() // 2 - 4 + world_offset_y)
+        screen.blit(flame_sprite, flame_sprite.get_rect(midtop=(flame_x, flame_y)))
+        blit_glow(flame_x, flame_y + 8, powerup_colors.get(active_weapon, (255, 150, 30)), 14)
 
-        player_rect = player_sprite.get_rect(center=(player_x + world_offset_x, player_y + world_offset_y))
-        screen.blit(player_sprite, player_rect)
+        if player_velocity_x < -70:
+            current_player_sprite = player_sprite_left
+            current_player_flash = player_flash_left
+        elif player_velocity_x > 70:
+            current_player_sprite = player_sprite_right
+            current_player_flash = player_flash_right
+        else:
+            current_player_sprite = player_sprite
+            current_player_flash = player_flash_center
+        player_rect = current_player_sprite.get_rect(center=(player_x + world_offset_x, player_y + world_offset_y))
+        screen.blit(current_player_sprite, player_rect)
         if player_hit_timer > 0 and player_hit_timer % 6 < 3:
-            flash_surface = player_sprite.copy()
-            flash_surface.fill((255, 80, 80, 140), special_flags=pygame.BLEND_RGBA_ADD)
-            screen.blit(flash_surface, player_rect)
+            screen.blit(current_player_flash, player_rect)
         if graze_pulse_timer > 0:
-            pygame.draw.circle(screen, (120, 230, 255), (int(player_x + world_offset_x), int(player_y + world_offset_y)), 30, 1)
+            pygame.draw.circle(screen, (120, 230, 255), (int(player_x + world_offset_x), int(player_y + world_offset_y)), 30, 2)
 
         for popup in score_popups:
+            popup_shadow = font.render(popup[0], True, TEXT_SHADOW_COLOR)
             popup_text = font.render(popup[0], True, popup[5])
             popup_rect = popup_text.get_rect(center=(popup[1] + world_offset_x, popup[2] + world_offset_y))
+            screen.blit(popup_shadow, (popup_rect.x + 2, popup_rect.y + 2))
             screen.blit(popup_text, popup_rect)
 
         draw_special_move(special_move_weapon, special_move_timer)
 
         score_color = (255, 230, 80) if high_score_beaten else (255, 255, 255)
-        score_text = font.render("Score: " + str(score), True, score_color)
-        screen.blit(score_text, (10, 10))
-        lives_text = font.render("Lives: " + str(lives), True, (255, 255, 255))
-        screen.blit(lives_text, (10, 40))
+        draw_text_shadowed(font, "Score: " + str(score), score_color, topleft=(10, 10))
+        draw_text_shadowed(font, "Lives: " + str(lives), (255, 255, 255), topleft=(10, 40))
         if lives <= 5 and pygame.time.get_ticks() % 700 < 450:
-            danger_text = font.render("DANGER", True, (255, 80, 80))
-            screen.blit(danger_text, (130, 40))
+            draw_text_shadowed(font, "DANGER", (255, 80, 80), topleft=(130, 40))
         if combo_count >= 2:
             combo_color = combo_tier_colors[score_multiplier]
-            combo_text = medium_32_pixel_font.render("x" + str(score_multiplier), True, combo_color)
-            screen.blit(combo_text, (205, 6))
-            chain_text = small_font.render(str(combo_count) + " CHAIN", True, (220, 235, 255))
-            screen.blit(chain_text, (262, 16))
-            combo_bar_rect = pygame.Rect(205, 42, 110, 8)
-            combo_fill = max(0, min(1, combo_timer / combo_window))
-            pygame.draw.rect(screen, (10, 20, 34), combo_bar_rect, border_radius=4)
-            pygame.draw.rect(screen, combo_color, (combo_bar_rect.x, combo_bar_rect.y, int(combo_bar_rect.width * combo_fill), combo_bar_rect.height), border_radius=4)
-            pygame.draw.rect(screen, (190, 230, 255), combo_bar_rect, 1, border_radius=4)
+            draw_text_shadowed(medium_32_pixel_font, "x" + str(score_multiplier), combo_color, topleft=(205, 6))
+            draw_text_shadowed(small_font, str(combo_count) + " CHAIN", (220, 235, 255), topleft=(262, 16))
+            draw_segment_bar(screen, 205, 42, 110, 8, combo_timer / combo_window, combo_color, segments=10)
         if boss is None and boss_warning_timer == 0 and 600 <= wave_timer < 760 and combo_count >= 5:
             if pygame.time.get_ticks() % 800 < 500:
-                hold_text = small_font.render("HOLD THE COMBO", True, (255, 220, 80))
-                screen.blit(hold_text, (205, 56))
+                draw_text_shadowed(small_font, "HOLD THE COMBO", (255, 220, 80), topleft=(205, 56))
         if active_weapon != "single":
             seconds_left = weapon_timer // 60 + 1
-            weapon_text = font.render("Weapon: " + active_weapon.upper() + " " + str(seconds_left), True, powerup_colors[active_weapon])
-            screen.blit(weapon_text, (10, 70))
+            draw_text_shadowed(font, "Weapon: " + active_weapon.upper() + " " + str(seconds_left), powerup_colors[active_weapon], topleft=(10, 70))
 
         shield_y = 102 if active_weapon != "single" else 72
-        shield_rect = pygame.Rect(10, shield_y, 180, 12)
         shield_fill = 0 if shield_max <= 0 else max(0, min(1, shield_current / shield_max))
-        pygame.draw.rect(screen, (10, 20, 34), shield_rect, border_radius=5)
-        pygame.draw.rect(screen, (70, 220, 255), (shield_rect.x, shield_rect.y, int(shield_rect.width * shield_fill), shield_rect.height), border_radius=5)
-        pygame.draw.rect(screen, (190, 230, 255), shield_rect, 1, border_radius=5)
-        shield_text = small_font.render("Shield " + str(int(shield_current)) + "/" + str(int(shield_max)), True, (210, 235, 255))
-        screen.blit(shield_text, (10, shield_y + 14))
+        draw_segment_bar(screen, 10, shield_y, 180, 12, shield_fill, (70, 220, 255), segments=12)
+        draw_text_shadowed(small_font, "Shield " + str(int(shield_current)) + "/" + str(int(shield_max)), (210, 235, 255), topleft=(10, shield_y + 16))
 
         draw_stage_hud()
         draw_galaxy_progress(galaxy_distance, radial_speed_ly_per_second, orbit_speed_degrees_per_second, orbit_angle)
 
         if boss_warning_timer > 0:
-            warning_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            warning_overlay.fill((255, 30, 30, int(40 + 25 * math.sin(boss_warning_timer / 6))))
+            warning_overlay.set_alpha(int(40 + 25 * math.sin(boss_warning_timer / 6)))
             screen.blit(warning_overlay, (0, 0))
             if boss_warning_timer % 30 < 18:
-                warning_text = medium_32_pixel_font.render("!! " + stages[current_stage]["boss"].upper() + " APPROACHING !!", True, (255, 80, 80))
-                screen.blit(warning_text, warning_text.get_rect(center=(SCREEN_WIDTH // 2, 230)))
+                draw_text_shadowed(medium_32_pixel_font, "!! " + stages[current_stage]["boss"].upper() + " APPROACHING !!", (255, 80, 80), center=(SCREEN_WIDTH // 2, 230))
 
         if lives <= 5:
-            vignette_alpha = int(40 + 25 * math.sin(pygame.time.get_ticks() / 150))
-            danger_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            pygame.draw.rect(danger_overlay, (255, 30, 30, vignette_alpha), (0, 0, SCREEN_WIDTH, 26))
-            pygame.draw.rect(danger_overlay, (255, 30, 30, vignette_alpha), (0, SCREEN_HEIGHT - 26, SCREEN_WIDTH, 26))
-            pygame.draw.rect(danger_overlay, (255, 30, 30, vignette_alpha), (0, 0, 26, SCREEN_HEIGHT))
-            pygame.draw.rect(danger_overlay, (255, 30, 30, vignette_alpha), (SCREEN_WIDTH - 26, 0, 26, SCREEN_HEIGHT))
-            screen.blit(danger_overlay, (0, 0))
+            vignette_overlay.set_alpha(int(160 + 95 * math.sin(pygame.time.get_ticks() / 150)))
+            screen.blit(vignette_overlay, (0, 0))
 
         if milestone_flash_timer > 0:
-            milestone_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            milestone_overlay.fill((255, 255, 255, int(60 * milestone_flash_timer / 8)))
+            milestone_overlay.set_alpha(int(60 * milestone_flash_timer / 8))
             screen.blit(milestone_overlay, (0, 0))
 
         if upgrade_screen:
             draw_upgrade_screen()
 
         if paused:
-            pause_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            pause_overlay.fill((0, 0, 0, 110))
             screen.blit(pause_overlay, (0, 0))
-            paused_text = medium_32_pixel_font.render("PAUSED", True, (235, 245, 255))
-            screen.blit(paused_text, paused_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)))
+            draw_text_shadowed(medium_32_pixel_font, "PAUSED", (235, 245, 255), center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
 
         if not upgrade_screen:
             draw_pause_play_button(paused)
+
+        if CRT_OVERLAY:
+            screen.blit(scanline_overlay, (0, 0))
 
         pygame.display.flip()
         clock.tick(TARGET_FPS)
@@ -1800,27 +2311,22 @@ while app_running:
                 if no_button.collidepoint(event.pos):
                     show_replay_prompt = False
 
-        screen.fill((0, 0, 0))
+        screen.blit(game_over_background, (0, 0))
+        draw_star_layers()
 
         if show_replay_prompt:
             mouse_pos = pygame.mouse.get_pos()
             yes_color = (70, 190, 110) if yes_button.collidepoint(mouse_pos) else (40, 140, 80)
             no_color = (190, 70, 70) if no_button.collidepoint(mouse_pos) else (140, 40, 40)
 
-            pygame.draw.rect(screen, yes_color, yes_button, border_radius=10)
-            pygame.draw.rect(screen, no_color, no_button, border_radius=10)
-            pygame.draw.rect(screen, (255, 255, 255), yes_button, 3, border_radius=10)
-            pygame.draw.rect(screen, (255, 255, 255), no_button, 3, border_radius=10)
+            draw_pixel_panel(screen, yes_button, (255, 255, 255), fill=yes_color)
+            draw_pixel_panel(screen, no_button, (255, 255, 255), fill=no_color)
 
-            yes_text = medium_32_pixel_font.render("YES", True, (255, 255, 255))
-            no_text = medium_32_pixel_font.render("NO", True, (255, 255, 255))
-            screen.blit(yes_text, yes_text.get_rect(center=yes_button.center))
-            screen.blit(no_text, no_text.get_rect(center=no_button.center))
+            draw_text_shadowed(medium_32_pixel_font, "YES", (255, 255, 255), center=yes_button.center)
+            draw_text_shadowed(medium_32_pixel_font, "NO", (255, 255, 255), center=no_button.center)
 
-            replay_title = medium_32_pixel_font.render("FLY AGAIN?", True, (235, 245, 255))
-            screen.blit(replay_title, replay_title.get_rect(center=(SCREEN_WIDTH // 2, 200)))
-            hint_text = small_font.render("R / Y - FLY AGAIN    N - QUIT", True, (180, 200, 230))
-            screen.blit(hint_text, hint_text.get_rect(center=(SCREEN_WIDTH // 2, 390)))
+            draw_text_shadowed(medium_32_pixel_font, "FLY AGAIN?", (235, 245, 255), center=(SCREEN_WIDTH // 2, 200))
+            draw_text_shadowed(small_font, "R / Y - FLY AGAIN    N - QUIT", (180, 200, 230), center=(SCREEN_WIDTH // 2, 390))
         else:
             if black_hole_crash:
                 end_title = "BLACK HOLE CRASH"
@@ -1828,26 +2334,20 @@ while app_running:
                 end_title = "MISSION COMPLETE"
             else:
                 end_title = "GAME OVER"
-            over_text = big_64pixel_font.render(end_title, True, (255, 50, 50))
-            screen.blit(over_text, (100, 100))
+            draw_text_shadowed(big_64pixel_font, end_title, (255, 50, 50), topleft=(100, 100))
 
-            final_text = medium_32_pixel_font.render("FINAL SCORE: " + str(score), True, (255, 255, 255))
-            screen.blit(final_text, (100, 300))
+            stats_panel = pygame.Rect(80, 280, 640, 274)
+            draw_pixel_panel(screen, stats_panel, HUD_BORDER)
 
-            high_score_text = medium_32_pixel_font.render("HIGH SCORE: " + str(high_score), True, (255, 220, 80))
-            screen.blit(high_score_text, (100, 350))
+            draw_text_shadowed(medium_32_pixel_font, "FINAL SCORE: " + str(score), (255, 255, 255), topleft=(100, 300))
+            draw_text_shadowed(medium_32_pixel_font, "HIGH SCORE: " + str(high_score), (255, 220, 80), topleft=(100, 350))
+            draw_text_shadowed(font, "BEST SCORE TIME: " + high_score_time, (200, 220, 255), topleft=(100, 395))
+            draw_text_shadowed(font, "BEST COMBO: " + str(best_combo_this_run) + " CHAIN (x" + str(get_combo_multiplier(best_combo_this_run)) + ")    GRAZES: " + str(graze_count_this_run), (120, 230, 255), topleft=(100, 430))
+            draw_text_shadowed(font, "ALL-TIME: " + str(lifetime_stats["total_kills"]) + " KILLS / " + str(lifetime_stats["total_boss_kills"]) + " BOSSES / " + str(lifetime_stats["total_runs"]) + " RUNS", (200, 220, 255), topleft=(100, 460))
+            draw_text_shadowed(medium_32_pixel_font, "CLOSE THE WINDOW TO EXIT", (150, 150, 150), topleft=(100, 510))
 
-            high_score_time_text = font.render("BEST SCORE TIME: " + high_score_time, True, (200, 220, 255))
-            screen.blit(high_score_time_text, (100, 395))
-
-            run_stats_text = font.render("BEST COMBO: " + str(best_combo_this_run) + " CHAIN (x" + str(get_combo_multiplier(best_combo_this_run)) + ")    GRAZES: " + str(graze_count_this_run), True, (120, 230, 255))
-            screen.blit(run_stats_text, (100, 430))
-
-            lifetime_text = font.render("ALL-TIME: " + str(lifetime_stats["total_kills"]) + " KILLS / " + str(lifetime_stats["total_boss_kills"]) + " BOSSES / " + str(lifetime_stats["total_runs"]) + " RUNS", True, (200, 220, 255))
-            screen.blit(lifetime_text, (100, 460))
-
-            quit_text = medium_32_pixel_font.render("CLOSE THE WINDOW TO EXIT", True, (150, 150, 150))
-            screen.blit(quit_text, (100, 510))
+        if CRT_OVERLAY:
+            screen.blit(scanline_overlay, (0, 0))
 
         pygame.display.flip()
         clock.tick(TARGET_FPS)
