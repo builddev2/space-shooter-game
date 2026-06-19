@@ -2002,6 +2002,24 @@ while app_running:
                     new_enemy_bullets.append(bullet)
             enemy_bullets = new_enemy_bullets
 
+            # Engine exhaust trail — a continuous pixel plume behind the ship
+            # for a sense of thrust. Emitted downward; particle gravity carries
+            # it away and it fades from bright to dark over its short life.
+            trail_color = powerup_colors.get(active_weapon, (255, 150, 30))
+            trail_dark = mix_color(trail_color, (20, 16, 30), 0.6)
+            trail_origin_y = player_y + player_sprite.get_height() // 2 - 2
+            for _ in range(2):
+                particles.append([
+                    player_x + random.uniform(-3, 3),
+                    trail_origin_y,
+                    random.uniform(-0.5, 0.5),
+                    random.uniform(1.8, 3.4),
+                    random.randint(9, 15),
+                    trail_color,
+                    random.randint(1, 2),
+                    trail_dark,
+                ])
+
             new_particles = []
             for particle in particles:
                 particle[0] = particle[0] + particle[2]
