@@ -1,7 +1,7 @@
 # Loop Progress
 
 Total passes planned: 5
-Passes completed: 2
+Passes completed: 3
 
 ## Latest scores (1–10, target ≥8 each)
 | Category | Score | Notes |
@@ -34,3 +34,9 @@ Passes completed: 2
 - Scores: #1 Visual fidelity 7→8, #2 Game feel 7→8. Visual rubric categories (#1-#5, #8) now all ≥8.
 - HONEST LIMIT: #6 Audio and #7 Difficulty/pacing are 7* provisional — they cannot be self-certified headless. The loop should NOT declare "all ≥8 / done" on my assessment alone; these two need a real audio-on playtest by the user. Loop continues.
 - Next pass targets: a remaining visual-polish item (e.g. parallax depth in star/nebula layers or bolt impact sparks), since #6/#7 are gated on human verification, not code.
+
+### Pass 3 (2026-06-19) — enemy hit-flash (damage feedback)
+- Found parallax (3 star layers) and non-lethal-hit sparks already exist. Genuine gap: enemies didn't visibly react when damaged-but-not-killed, so tanky enemies absorbed shots with no feedback.
+- Added white hit-flash sprites for all 4 enemy types; gave each enemy a trailing flash-timer field (index 7, safe — all enemy access is by index, single spawn site), set it to 4 on a non-lethal hit, decremented per frame, blitted when active.
+- Verified game launches clean headless. (Flash is a 4-frame pop, so it doesn't reliably land in a sampled still, but runs without error.)
+- Scores unchanged at ceiling: #3 Feedback stays 8 (reinforced), visuals remain 8. No regressions.

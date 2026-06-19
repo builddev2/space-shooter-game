@@ -1370,6 +1370,12 @@ enemy_sprites = [
     (make_pixel_sprite(kamikaze_rows_a, kamikaze_colors, 3), make_pixel_sprite(kamikaze_rows_b, kamikaze_colors, 3)),
 ]
 enemy_flash_sprites = tuple(make_flash_sprite(frame, (255, 60, 60, 130)) for frame in enemy_sprites[3])
+# Bright white hit-flash per enemy type — popped briefly when an enemy is
+# damaged but not destroyed, so tanky enemies visibly react to every shot.
+enemy_hit_flash_sprites = [
+    tuple(make_flash_sprite(frame, (255, 255, 255, 165)) for frame in frames)
+    for frames in enemy_sprites
+]
 
 def make_boss_frames(half_rows, colors, pulse_keys):
     rows = mirror_rows(half_rows)
@@ -1946,7 +1952,7 @@ while app_running:
                             enemy_hp = enemy_hp * 3
                         elif enemy_type == 3:
                             enemy_hp = 3
-                        enemies.append([enemy_x, enemy_y, enemy_type, enemy_hp, 0, random.randint(0, 60), 0])
+                        enemies.append([enemy_x, enemy_y, enemy_type, enemy_hp, 0, random.randint(0, 60), 0, 0])
                     spawn_timer = 0
 
             update_boss()
@@ -1954,6 +1960,8 @@ while app_running:
             new_enemies = []
             for enemy in enemies:
                 enemy[5] = enemy[5] + 1
+                if enemy[7] > 0:
+                    enemy[7] = enemy[7] - 1
                 if enemy[2] == 0:
                     if enemy[6] == 0 and enemy[1] > 130 and abs(enemy[0] - player_x) < 90:
                         enemy[6] = 1
@@ -2082,6 +2090,7 @@ while app_running:
                             screen_shake_strength = max(screen_shake_strength, 3)
                         else:
                             add_particles(enemy[0], enemy[1], powerup_colors.get(laser[4], (255, 220, 60)), 6, 2, 12, 2)
+                            enemy[7] = 4
                             surviving_enemies.append(enemy)
                     else:
                         surviving_enemies.append(enemy)
@@ -2267,6 +2276,8 @@ while app_running:
             screen.blit(enemy_sprite, enemy_rect)
             if enemy[2] == 3 and enemy[5] % 16 < 8:
                 screen.blit(enemy_flash_sprites[enemy_frame], enemy_rect)
+            if enemy[7] > 0:
+                screen.blit(enemy_hit_flash_sprites[enemy[2]][enemy_frame], enemy_rect)
 
         draw_boss()
 
