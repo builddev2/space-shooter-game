@@ -1,9 +1,16 @@
+import os
 import pygame
 import random
 import math
 from array import array
 from datetime import datetime
 from pathlib import Path
+
+# Automated screenshot mode for the quality-rubric loop. Off during normal play.
+# Run with: SHOT_MODE=1 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3 space_shooter.py
+SHOT_MODE = os.environ.get("SHOT_MODE") == "1"
+SHOT_FRAME = 0
+SHOT_CAPTURE_FRAMES = (90, 180, 300, 450, 620)
 
 SAMPLE_RATE = 22050
 LIGHT_YEAR_KILOMETERS = 9461000000000
@@ -73,14 +80,70 @@ boss_music = [
 SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
 TARGET_FPS = 60
-DISPLAY_FLAGS = pygame.SCALED | pygame.DOUBLEBUF
+WINDOW_FLAGS = pygame.RESIZABLE | pygame.DOUBLEBUF
 
-try:
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), DISPLAY_FLAGS, vsync=1)
-except TypeError:
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), DISPLAY_FLAGS)
+
+def compute_initial_window_size():
+    """Pick a launch window size that fills most of the desktop, keeping 4:3."""
+    try:
+        desktop_w, desktop_h = pygame.display.get_desktop_sizes()[0]
+    except (AttributeError, IndexError, pygame.error):
+        info = pygame.display.Info()
+        desktop_w, desktop_h = info.current_w, info.current_h
+    scale = min(desktop_w * 0.85 / SCREEN_WIDTH, desktop_h * 0.85 / SCREEN_HEIGHT)
+    scale = max(scale, 1.0)
+    return int(SCREEN_WIDTH * scale), int(SCREEN_HEIGHT * scale)
+
+
+def open_window(size):
+    try:
+        return pygame.display.set_mode(size, WINDOW_FLAGS, vsync=1)
+    except (TypeError, pygame.error):
+        return pygame.display.set_mode(size, WINDOW_FLAGS)
+
+
+window = open_window(compute_initial_window_size())
 pygame.display.set_caption("Space Shooter")
-pygame.event.set_allowed([pygame.QUIT, pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN])
+pygame.event.set_allowed([pygame.QUIT, pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN, pygame.VIDEORESIZE])
+
+# The game is always drawn to this fixed 800x600 logical canvas, then scaled up
+# to fill the (resizable) window each frame in present().
+screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+
+# Mapping from window pixels back to logical canvas coordinates, updated by present().
+_view_scale = 1.0
+_view_offset = (0, 0)
+
+
+def present():
+    """Scale the logical canvas into the window with aspect-correct letterboxing."""
+    global _view_scale, _view_offset
+    win_w, win_h = window.get_size()
+    scale = min(win_w / SCREEN_WIDTH, win_h / SCREEN_HEIGHT)
+    scaled_w = max(1, int(SCREEN_WIDTH * scale))
+    scaled_h = max(1, int(SCREEN_HEIGHT * scale))
+    offset_x = (win_w - scaled_w) // 2
+    offset_y = (win_h - scaled_h) // 2
+    _view_scale = scale
+    _view_offset = (offset_x, offset_y)
+    if offset_x or offset_y:
+        window.fill((0, 0, 0))
+    window.blit(pygame.transform.scale(screen, (scaled_w, scaled_h)), (offset_x, offset_y))
+    pygame.display.flip()
+
+
+def to_logical(pos):
+    """Map a window-pixel position to logical 800x600 canvas coordinates."""
+    return ((pos[0] - _view_offset[0]) / _view_scale, (pos[1] - _view_offset[1]) / _view_scale)
+
+
+def logical_mouse_pos():
+    return to_logical(pygame.mouse.get_pos())
+
+
+def handle_window_resize(new_size):
+    global window
+    window = open_window((max(SCREEN_WIDTH // 2, new_size[0]), max(SCREEN_HEIGHT // 2, new_size[1])))
 clock = pygame.time.Clock()
 running = True
 
@@ -102,6 +165,8 @@ def load_high_score_time():
 
 
 def save_high_score(value, score_time):
+    if SHOT_MODE:
+        return
     with open(HIGH_SCORE_FILE, "w") as f:
         f.write(str(value))
     with open(HIGH_SCORE_TIME_FILE, "w") as f:
@@ -123,6 +188,8 @@ def load_stats():
 
 
 def save_stats():
+    if SHOT_MODE:
+        return
     with open(STATS_FILE, "w") as f:
         for key, value in lifetime_stats.items():
             f.write(key + "=" + str(value) + "\n")
@@ -306,7 +373,7 @@ def draw_galaxy_progress(distance, radial_speed, orbit_speed, orbit_angle):
         (progress_rect.x + 3, progress_rect.y + 3, int((progress_rect.width - 6) * distance_remaining), progress_rect.height - 6),
     )
 
-    end_label = small_font.render("GAME OVER", True, (255, 120, 120))
+    end_label = small_font.render("CORE 0 LY", True, (255, 120, 120))
     far_label = small_font.render("50,000 LY", True, (145, 165, 205))
     screen.blit(end_label, (progress_rect.x, progress_rect.y - 16))
     screen.blit(far_label, far_label.get_rect(topright=(progress_rect.right, progress_rect.y - 16)))
@@ -357,7 +424,7 @@ def draw_galaxy_progress(distance, radial_speed, orbit_speed, orbit_angle):
 
 def draw_pause_play_button(paused):
     button_text = "PLAY" if paused else "PAUSE"
-    mouse_pos = pygame.mouse.get_pos()
+    mouse_pos = logical_mouse_pos()
     accent = (120, 190, 255)
     button_color = (55, 145, 220) if pause_button.collidepoint(mouse_pos) else (28, 78, 135)
     if paused:
@@ -425,7 +492,7 @@ def draw_upgrade_screen():
         ("shields", "SHIELDS", "+20 lives", "Level " + str(shield_upgrade_level)),
         ("engine", "ENGINE", "+15% move speed", "Level " + str(engine_upgrade_level)),
     ]
-    mouse_pos = pygame.mouse.get_pos()
+    mouse_pos = logical_mouse_pos()
     for i, card in enumerate(upgrade_cards):
         upgrade_name, title_text, bonus_text, level_text = card
         rect = upgrade_buttons[upgrade_name]
@@ -587,15 +654,47 @@ def make_explosion_frames(base_size, scale):
     return frames
 
 
+# 4x4 ordered-dither matrix for quantizing nebula clouds into pixels.
+NEBULA_BAYER = (
+    (0, 8, 2, 10),
+    (12, 4, 14, 6),
+    (3, 11, 1, 9),
+    (15, 7, 13, 5),
+)
+
+
 def make_nebula(color, seed):
+    # Build a low-res density field of soft blobs, then ordered-dither it into
+    # discrete alpha tiers so it upscales (nearest-neighbour) to a crisp,
+    # stippled pixel cloud instead of a smooth translucent gradient.
     rng = random.Random(seed)
-    surf = pygame.Surface((100, 75), pygame.SRCALPHA)
-    for _ in range(16):
-        blob_x = rng.randint(-10, 110)
-        blob_y = rng.randint(-10, 85)
-        blob_radius = rng.randint(6, 24)
-        blob_alpha = rng.randint(9, 20)
-        pygame.draw.circle(surf, (color[0], color[1], color[2], blob_alpha), (blob_x, blob_y), blob_radius)
+    low_w, low_h = SCREEN_WIDTH // 5, SCREEN_HEIGHT // 5
+    surf = pygame.Surface((low_w, low_h), pygame.SRCALPHA)
+    blobs = []
+    for _ in range(13):
+        blobs.append((
+            rng.uniform(-15, low_w + 15),
+            rng.uniform(-15, low_h + 15),
+            rng.uniform(18, 52),
+            rng.uniform(0.22, 0.7),
+        ))
+    for y in range(low_h):
+        for x in range(low_w):
+            density = 0.0
+            for blob_x, blob_y, blob_radius, strength in blobs:
+                d = math.hypot(x - blob_x, y - blob_y)
+                if d < blob_radius:
+                    falloff = 1.0 - d / blob_radius
+                    density += strength * falloff * falloff
+            if density <= 0.02:
+                continue
+            threshold = (NEBULA_BAYER[y % 4][x % 4] + 0.5) / 16.0
+            level = density - threshold * 0.5
+            if level <= 0:
+                continue
+            tier = min(3, int(level * 4))
+            alpha = (tier + 1) * 13
+            surf.set_at((x, y), (color[0], color[1], color[2], alpha))
     return pygame.transform.scale(surf, (SCREEN_WIDTH, SCREEN_HEIGHT))
 
 
@@ -1733,7 +1832,9 @@ while app_running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            if upgrade_screen and event.type == pygame.KEYDOWN:
+            elif event.type == pygame.VIDEORESIZE:
+                handle_window_resize(event.size)
+            elif upgrade_screen and event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_1:
                     apply_upgrade("guns")
                 elif event.key == pygame.K_2:
@@ -1742,11 +1843,11 @@ while app_running:
                     apply_upgrade("engine")
             elif upgrade_screen and event.type == pygame.MOUSEBUTTONDOWN:
                 for upgrade_name, button_rect in upgrade_buttons.items():
-                    if button_rect.collidepoint(event.pos):
+                    if button_rect.collidepoint(to_logical(event.pos)):
                         apply_upgrade(upgrade_name)
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_p:
                 toggle_pause()
-            elif event.type == pygame.MOUSEBUTTONDOWN and pause_button.collidepoint(event.pos):
+            elif event.type == pygame.MOUSEBUTTONDOWN and pause_button.collidepoint(to_logical(event.pos)):
                 toggle_pause()
 
         # --- UPDATE ---
@@ -2276,7 +2377,18 @@ while app_running:
         if CRT_OVERLAY:
             screen.blit(scanline_overlay, (0, 0))
 
-        pygame.display.flip()
+        if SHOT_MODE and not paused and not upgrade_screen:
+            SHOT_FRAME = SHOT_FRAME + 1
+            if SHOT_FRAME % 9 == 0:
+                fire_player_weapon()
+            if SHOT_FRAME in SHOT_CAPTURE_FRAMES:
+                Path("loop_shots").mkdir(exist_ok=True)
+                pygame.image.save(screen, "loop_shots/frame_%04d.png" % SHOT_FRAME)
+            if SHOT_FRAME > SHOT_CAPTURE_FRAMES[-1]:
+                running = False
+                app_running = False
+
+        present()
         clock.tick(TARGET_FPS)
 
     music_channel.stop()
@@ -2294,10 +2406,16 @@ while app_running:
     no_button = pygame.Rect(440, 270, 200, 80)
 
     while game_over:
+        if SHOT_MODE:
+            game_over = False
+            app_running = False
+            break
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 game_over = False
                 app_running = False
+            if event.type == pygame.VIDEORESIZE:
+                handle_window_resize(event.size)
             if show_replay_prompt and event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_y, pygame.K_r):
                     reset_run()
@@ -2305,17 +2423,17 @@ while app_running:
                 if event.key == pygame.K_n:
                     show_replay_prompt = False
             if show_replay_prompt and event.type == pygame.MOUSEBUTTONDOWN:
-                if yes_button.collidepoint(event.pos):
+                if yes_button.collidepoint(to_logical(event.pos)):
                     reset_run()
                     game_over = False
-                if no_button.collidepoint(event.pos):
+                if no_button.collidepoint(to_logical(event.pos)):
                     show_replay_prompt = False
 
         screen.blit(game_over_background, (0, 0))
         draw_star_layers()
 
         if show_replay_prompt:
-            mouse_pos = pygame.mouse.get_pos()
+            mouse_pos = logical_mouse_pos()
             yes_color = (70, 190, 110) if yes_button.collidepoint(mouse_pos) else (40, 140, 80)
             no_color = (190, 70, 70) if no_button.collidepoint(mouse_pos) else (140, 40, 40)
 
@@ -2349,6 +2467,6 @@ while app_running:
         if CRT_OVERLAY:
             screen.blit(scanline_overlay, (0, 0))
 
-        pygame.display.flip()
+        present()
         clock.tick(TARGET_FPS)
 pygame.quit()

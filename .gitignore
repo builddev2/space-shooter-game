@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# Quality-rubric loop verification screenshots
+loop_shots/
