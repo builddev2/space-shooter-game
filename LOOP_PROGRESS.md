@@ -1,7 +1,7 @@
 # Loop Progress
 
 Total passes planned: 5
-Passes completed: 3
+Passes completed: 4
 
 ## Latest scores (1–10, target ≥8 each)
 | Category | Score | Notes |
@@ -40,3 +40,8 @@ Passes completed: 3
 - Added white hit-flash sprites for all 4 enemy types; gave each enemy a trailing flash-timer field (index 7, safe — all enemy access is by index, single spawn site), set it to 4 on a non-lethal hit, decremented per frame, blitted when active.
 - Verified game launches clean headless. (Flash is a 4-frame pop, so it doesn't reliably land in a sampled still, but runs without error.)
 - Scores unchanged at ceiling: #3 Feedback stays 8 (reinforced), visuals remain 8. No regressions.
+
+### Pass 4 (2026-06-19) — player hurt vignette (damage feedback)
+- Player damage had ship-flash + shake but no full-screen cue. Added a red screen-edge vignette (draw_hurt_vignette) that flashes for ~15 frames after a hit, intensity ramped from player_hit_timer, drawn under the HUD so readouts stay legible.
+- Verified clean headless launch. Timing-dependent like the hit-flash (only visible right after a hit), so not reliably caught in a sampled still, but the blit is straightforward and error-free.
+- Scores: #2 Game feel / #3 Feedback reinforced at 8. No regressions.

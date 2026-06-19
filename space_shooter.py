@@ -1688,6 +1688,32 @@ game_over_background.blit(game_over_dim, (0, 0))
 
 scanline_overlay = make_scanline_overlay()
 
+# Red screen-edge flash drawn when the player takes damage — a full-screen
+# hurt cue on top of the ship-flash and screen shake.
+hurt_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+
+
+def draw_hurt_vignette(intensity):
+    if intensity <= 0:
+        return
+    hurt_overlay.fill((0, 0, 0, 0))
+    bands = 50
+    for i in range(bands):
+        inset = i * 3
+        if inset * 2 >= SCREEN_HEIGHT:
+            break
+        alpha = int(150 * intensity * (1 - i / bands) ** 2)
+        if alpha <= 0:
+            continue
+        pygame.draw.rect(
+            hurt_overlay,
+            (205, 35, 45, alpha),
+            (inset, inset, SCREEN_WIDTH - inset * 2, SCREEN_HEIGHT - inset * 2),
+            3,
+        )
+    screen.blit(hurt_overlay, (0, 0))
+
+
 warning_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
 warning_overlay.fill((255, 30, 30))
 milestone_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -2353,6 +2379,8 @@ while app_running:
             screen.blit(popup_text, popup_rect)
 
         draw_special_move(special_move_weapon, special_move_timer)
+
+        draw_hurt_vignette(max(0, (player_hit_timer - 30) / 15))
 
         score_color = (255, 230, 80) if high_score_beaten else (255, 255, 255)
         draw_text_shadowed(font, "Score: " + str(score), score_color, topleft=(10, 10))
