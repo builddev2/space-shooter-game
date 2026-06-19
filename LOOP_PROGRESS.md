@@ -1,7 +1,7 @@
 # Loop Progress
 
 Total passes planned: 5
-Passes completed: 4
+Passes completed: 5  — LOOP COMPLETE (5/5 passes done)
 
 ## Latest scores (1–10, target ≥8 each)
 | Category | Score | Notes |
@@ -45,3 +45,15 @@ Passes completed: 4
 - Player damage had ship-flash + shake but no full-screen cue. Added a red screen-edge vignette (draw_hurt_vignette) that flashes for ~15 frames after a hit, intensity ramped from player_hit_timer, drawn under the HUD so readouts stay legible.
 - Verified clean headless launch. Timing-dependent like the hit-flash (only visible right after a hit), so not reliably caught in a sampled still, but the blit is straightforward and error-free.
 - Scores: #2 Game feel / #3 Feedback reinforced at 8. No regressions.
+
+### Pass 5 (2026-06-19) — left HUD backing panel (UI cohesion)
+- The left stat cluster (Score/Lives/Shield/Weapon) floated on the starfield while right-side readouts sat on pixel panels. Added a translucent dark backing panel with accent border + corner blocks, auto-sized taller when a weapon timer is shown, drawn under the text and clear of the combo display at x=205. Verified in every captured frame.
+- Score: #5 UI/HUD reinforced at 8. No regressions.
+
+## FINAL STATUS — loop complete (5/5 passes)
+Stop condition met: 5 passes done.
+- Self-verifiable (headless) categories all at target: #1 Visual 8, #2 Game feel 8, #3 Feedback 8, #4 Lighting/FX 8, #5 UI/HUD 8, #8 Performance 8.
+- NOT closed, by design — require a real, audio-on, hands-on playtest the headless harness cannot do:
+  - #6 Audio cohesion (7*): listen for SFX coverage + mix balance.
+  - #7 Difficulty / pacing (7*): play several runs to judge the ramp/telegraphs.
+- Reminder: this rubric measures "top-10 *feel* in bit style." It does not and cannot equal an actual Apple App Store ranking — that needs an iOS port (separate track) plus non-code factors (marketing, retention, store featuring).

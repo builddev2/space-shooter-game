@@ -2382,6 +2382,18 @@ while app_running:
 
         draw_hurt_vignette(max(0, (player_hit_timer - 30) / 15))
 
+        # Translucent backing panel so the left stat cluster reads as a unit
+        # against the busy starfield, matching the right-side HUD panels.
+        hud_panel_h = (102 if active_weapon != "single" else 72) + 32
+        hud_panel = pygame.Surface((198, hud_panel_h), pygame.SRCALPHA)
+        hud_panel.fill((10, 14, 26, 145))
+        screen.blit(hud_panel, (4, 4))
+        hud_panel_rect = pygame.Rect(4, 4, 198, hud_panel_h)
+        pygame.draw.rect(screen, (60, 80, 120), hud_panel_rect, 2)
+        for corner_x in (hud_panel_rect.left, hud_panel_rect.right - 3):
+            for corner_y in (hud_panel_rect.top, hud_panel_rect.bottom - 3):
+                pygame.draw.rect(screen, (60, 80, 120), (corner_x, corner_y, 3, 3))
+
         score_color = (255, 230, 80) if high_score_beaten else (255, 255, 255)
         draw_text_shadowed(font, "Score: " + str(score), score_color, topleft=(10, 10))
         draw_text_shadowed(font, "Lives: " + str(lives), (255, 255, 255), topleft=(10, 40))
