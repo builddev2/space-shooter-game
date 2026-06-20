@@ -33,6 +33,128 @@ def make_music_loop(notes, volume):
     return pygame.mixer.Sound(buffer=samples.tobytes())
 
 
+# --- EDM / synthwave music engine ------------------------------------------
+# The background tracks below are built as layered electronic loops: a
+# four-on-the-floor kick, a driving sub-bass, and an arpeggiated synth lead.
+# Each layer is rendered into a float mix buffer, summed, soft-clipped, then
+# converted to int16. Inspired by the club-EDM / dark-synthwave space-shooter
+# canon (WipEout, Hotline Miami, Rez). Pure math + array only (no numpy).
+TWO_PI = 2 * math.pi
+
+
+def _osc(phase, wave):
+    # phase is in turns (0..1); returns a sample in [-1, 1].
+    t = phase - math.floor(phase)
+    if wave == "sine":
+        return math.sin(TWO_PI * t)
+    if wave == "saw":
+        return 2.0 * t - 1.0
+    if wave == "square":
+        return 1.0 if t < 0.5 else -1.0
+    if wave == "tri":
+        return 4.0 * abs(t - 0.5) - 1.0
+    return math.sin(TWO_PI * t)
+
+
+def _add_voice(mix, start, freq, dur, wave, vol, attack=0.004, release=0.05, detune=0.0):
+    # Mix one note into the float buffer with a click-free AR envelope.
+    if freq <= 0 or vol <= 0:
+        return
+    count = int(SAMPLE_RATE * dur)
+    atk = max(1, int(SAMPLE_RATE * attack))
+    rel = max(1, int(SAMPLE_RATE * release))
+    inc = freq / SAMPLE_RATE
+    inc2 = (freq * (1.0 + detune)) / SAMPLE_RATE if detune else 0.0
+    n = len(mix)
+    for i in range(count):
+        idx = start + i
+        if idx >= n:
+            break
+        env = min(1.0, i / atk, (count - i) / rel)
+        s = _osc(i * inc, wave)
+        if detune:
+            s = 0.6 * s + 0.4 * _osc(i * inc2, wave)
+        mix[idx] += vol * env * s
+
+
+def _add_kick(mix, start, vol=0.95):
+    # Punchy four-on-the-floor kick: pitch drops ~150 -> 48 Hz with fast decay.
+    dur = 0.18
+    count = int(SAMPLE_RATE * dur)
+    n = len(mix)
+    phase = 0.0
+    for i in range(count):
+        idx = start + i
+        if idx >= n:
+            break
+        frac = i / count
+        freq = 48.0 + (150.0 - 48.0) * math.exp(-9.0 * frac)
+        phase += freq / SAMPLE_RATE
+        amp = math.exp(-7.0 * frac)
+        mix[idx] += vol * amp * math.sin(TWO_PI * phase)
+
+
+def _add_hat(mix, start, vol=0.18):
+    # Short noisy-ish closed hat (square at high freq + quick decay) for groove.
+    dur = 0.04
+    count = int(SAMPLE_RATE * dur)
+    n = len(mix)
+    seed = (start * 1103515245 + 12345) & 0x7FFFFFFF
+    for i in range(count):
+        idx = start + i
+        if idx >= n:
+            break
+        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+        noise = (seed / 0x3FFFFFFF) - 1.0
+        amp = math.exp(-55.0 * (i / count))
+        mix[idx] += vol * amp * noise
+
+
+def build_track(bpm, bars, bass_steps, arp_steps, lead_wave="saw",
+                bass_wave="square", volume=1.0, drums=True, hats=False,
+                lead_vol=0.5, bass_vol=0.6):
+    # 16 steps per bar (16th notes). bass_steps / arp_steps are frequency lists
+    # (0 = rest); they tile to fill every bar. Returns a looping mixer Sound.
+    steps_per_bar = 16
+    total_steps = bars * steps_per_bar
+    step_dur = 60.0 / bpm / 4.0  # one 16th note
+    total_samples = int(SAMPLE_RATE * step_dur * total_steps) + 1
+    mix = [0.0] * total_samples
+
+    for step in range(total_steps):
+        start = int(step * step_dur * SAMPLE_RATE)
+        # Bass: sustain across the step for a driving sub feel.
+        bf = bass_steps[step % len(bass_steps)] if bass_steps else 0
+        if bf > 0:
+            _add_voice(mix, start, bf, step_dur * 1.05, bass_wave, bass_vol,
+                       attack=0.003, release=0.03, detune=0.004)
+        # Arp / lead: shorter, brighter, plucky.
+        af = arp_steps[step % len(arp_steps)] if arp_steps else 0
+        if af > 0:
+            _add_voice(mix, start, af, step_dur * 0.9, lead_wave, lead_vol,
+                       attack=0.002, release=0.04, detune=0.01)
+        # Drums.
+        if drums and step % 4 == 0:
+            _add_kick(mix, start)
+        if hats and step % 4 == 2:
+            _add_hat(mix, start)
+
+    # Soft-clip and convert to int16.
+    samples = array("h")
+    for v in mix:
+        v *= volume
+        # tanh-ish soft clip to keep summed layers from harsh clipping.
+        if v > 1.0 or v < -1.0:
+            v = math.tanh(v)
+        s = int(13500 * v)
+        if s > 32767:
+            s = 32767
+        elif s < -32768:
+            s = -32768
+        samples.append(s)
+    return pygame.mixer.Sound(buffer=samples.tobytes())
+
+
 pygame.init()
 BASE_DIR = Path(__file__).resolve().parent
 HIGH_SCORE_FILE = BASE_DIR / "highscore.txt"
@@ -40,6 +162,8 @@ HIGH_SCORE_TIME_FILE = BASE_DIR / "highscore_time.txt"
 STATS_FILE = BASE_DIR / "stats.txt"
 pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=1)
 pygame.mixer.set_reserved(1)
+# Master volume scales every sound's effective output. Reduced 40% from full.
+MASTER_VOLUME = 0.6
 weapon_sounds = {
     "single": pygame.mixer.Sound(str(BASE_DIR / "laser.wav")),
     "double": pygame.mixer.Sound(str(BASE_DIR / "laser_double.wav")),
@@ -48,39 +172,96 @@ weapon_sounds = {
     "heavy": pygame.mixer.Sound(str(BASE_DIR / "laser_heavy.wav")),
 }
 for sound in weapon_sounds.values():
-    sound.set_volume(0.4)
+    sound.set_volume(0.4 * MASTER_VOLUME)
 enemy_hit_sound = pygame.mixer.Sound(str(BASE_DIR / "enemy_hit.wav"))
 powerup_collect_sound = pygame.mixer.Sound(str(BASE_DIR / "powerup_collect.wav"))
 player_hit_sound = pygame.mixer.Sound(str(BASE_DIR / "player_hit.wav"))
-enemy_hit_sound.set_volume(0.35)
-powerup_collect_sound.set_volume(0.45)
-player_hit_sound.set_volume(0.45)
+enemy_hit_sound.set_volume(0.35 * MASTER_VOLUME)
+powerup_collect_sound.set_volume(0.45 * MASTER_VOLUME)
+player_hit_sound.set_volume(0.45 * MASTER_VOLUME)
 graze_sound = make_music_loop([(1320, 0.03)], 0.4)
 milestone_sound = make_music_loop([(523, 0.05), (659, 0.05), (784, 0.10)], 0.5)
 warning_sound = make_music_loop([(196, 0.16), (0, 0.05), (196, 0.16)], 0.6)
 new_record_sound = make_music_loop([(440, 0.07), (554, 0.07), (659, 0.07), (880, 0.16)], 0.55)
+for cue_sound in (graze_sound, milestone_sound, warning_sound, new_record_sound):
+    cue_sound.set_volume(MASTER_VOLUME)
 music_channel = pygame.mixer.Channel(0)
-music_channel.set_volume(0.32)
+music_channel.set_volume(0.32 * MASTER_VOLUME)
 current_music_name = ""
+# Note frequencies (Hz) used to spell the loop patterns below. _ is a rest.
+_ = 0
+A1, C2, D2, E2, F2, G2, A2, B2 = 55, 65, 73, 82, 87, 98, 110, 123
+Bb2 = 117
+C3, D3, E3, F3, G3, A3, Bb3, B3 = 131, 147, 165, 175, 196, 220, 233, 247
+C4, D4, E4, F4, G4, A4, B4 = 262, 294, 330, 349, 392, 440, 494
+C5, D5, E5, G5, A5 = 523, 587, 659, 784, 880
+
+# Five distinct stage tracks, escalating in tempo and intensity. Each one's
+# vibe: 1) bright house, 2) faster uplifting, 3) darker syncopated, 4) gritty
+# driving synthwave, 5) relentless dark synth.
 stage_music = [
-    make_music_loop([(220, 0.16), (330, 0.16), (440, 0.16), (330, 0.16), (247, 0.16), (370, 0.16), (494, 0.16), (370, 0.16)], 0.30),
-    make_music_loop([(196, 0.14), (294, 0.14), (392, 0.14), (494, 0.14), (392, 0.14), (294, 0.14), (262, 0.14), (330, 0.14)], 0.28),
-    make_music_loop([(165, 0.18), (247, 0.12), (330, 0.18), (247, 0.12), (185, 0.18), (277, 0.12), (370, 0.18), (277, 0.12)], 0.31),
-    make_music_loop([(147, 0.15), (220, 0.15), (294, 0.15), (440, 0.15), (330, 0.15), (247, 0.15), (196, 0.15), (294, 0.15)], 0.29),
-    make_music_loop([(110, 0.20), (165, 0.10), (220, 0.20), (330, 0.10), (147, 0.20), (220, 0.10), (294, 0.20), (440, 0.10)], 0.34),
-]
-boss_music = [
-    make_music_loop([(110, 0.10), (0, 0.04), (220, 0.10), (0, 0.04), (165, 0.10), (0, 0.04), (247, 0.10), (0, 0.04)], 0.38),
-    make_music_loop([(130, 0.08), (196, 0.08), (262, 0.08), (330, 0.08), (262, 0.08), (196, 0.08), (130, 0.08), (98, 0.08)], 0.36),
-    make_music_loop([(175, 0.12), (233, 0.06), (350, 0.12), (466, 0.06), (208, 0.12), (277, 0.06), (415, 0.12), (554, 0.06)], 0.34),
-    make_music_loop([(82, 0.16), (123, 0.08), (165, 0.16), (247, 0.08), (98, 0.16), (147, 0.08), (196, 0.16), (294, 0.08)], 0.40),
-    make_music_loop([(73, 0.09), (110, 0.09), (147, 0.09), (220, 0.09), (294, 0.09), (220, 0.09), (147, 0.09), (110, 0.09)], 0.42),
+    # Stage 1 - A minor, bright mid-tempo house. Inviting groove.
+    build_track(
+        bpm=112, bars=2,
+        bass_steps=[A2, _, A2, _, A2, _, _, A2, F2, _, F2, _, G2, _, _, G2],
+        arp_steps=[A4, C5, E5, C5, A4, C5, E5, C5, F4, A4, C5, A4, G4, B4, D5, B4],
+        lead_wave="tri", bass_wave="square", lead_vol=0.42, bass_vol=0.55,
+        hats=True, volume=0.95),
+    # Stage 2 - C major, faster, brighter 16th arp.
+    build_track(
+        bpm=120, bars=2,
+        bass_steps=[C2, _, C2, C2, _, C2, _, C2, G2, _, G2, _, A2, _, A2, _],
+        arp_steps=[C5, E5, G5, E5, C5, E5, G5, A5, G5, E5, C5, E5, G4, B4, D5, B4],
+        lead_wave="saw", bass_wave="square", lead_vol=0.40, bass_vol=0.55,
+        hats=True, volume=0.95),
+    # Stage 3 - D minor, darker, syncopated bass.
+    build_track(
+        bpm=126, bars=2,
+        bass_steps=[D2, _, _, D2, D2, _, A1, _, F2, _, _, F2, E2, _, E2, _],
+        arp_steps=[D5, A4, F4, A4, D5, F4, A4, C5, D5, A4, F4, D4, E4, G4, B3, A4],
+        lead_wave="saw", bass_wave="saw", lead_vol=0.42, bass_vol=0.60,
+        hats=True, volume=0.98),
+    # Stage 4 - E minor, gritty driving synthwave.
+    build_track(
+        bpm=132, bars=2,
+        bass_steps=[E2, E2, _, E2, E2, _, E2, _, C2, C2, _, C2, D2, D2, _, D2],
+        arp_steps=[E5, B4, G4, B4, E5, G4, B4, E5, D5, A4, F4, A4, D5, F4, A4, D5],
+        lead_wave="saw", bass_wave="saw", lead_vol=0.44, bass_vol=0.62,
+        hats=True, volume=1.0),
+    # Stage 5 - A minor (low), relentless dark synth. Dense and fast.
+    build_track(
+        bpm=138, bars=2,
+        bass_steps=[A1, A1, A1, _, A1, A1, _, A1, F2, F2, _, F2, G2, G2, _, G2],
+        arp_steps=[A4, E5, A5, E5, C5, G5, C5, E5, F4, C5, A4, C5, G4, D5, B4, D5],
+        lead_wave="saw", bass_wave="saw", lead_vol=0.46, bass_vol=0.66,
+        hats=True, volume=1.02),
 ]
 
-SCREEN_WIDTH = 800
-SCREEN_HEIGHT = 600
+# One shared boss theme used by every boss battle: fast, aggressive,
+# four-on-the-floor dark-minor banger with a distorted square bass.
+boss_music = build_track(
+    bpm=150, bars=2,
+    bass_steps=[D2, D2, D2, D2, D2, D2, D2, D2, Bb2, Bb2, Bb2, Bb2, A1, A1, A1, A1],
+    arp_steps=[D5, _, F4, _, A4, _, D5, F4, A4, _, F4, _, D5, A4, F4, E5],
+    lead_wave="saw", bass_wave="square", lead_vol=0.48, bass_vol=0.72,
+    hats=True, volume=1.05)
+
+# RES is the master render-resolution multiplier. The game is authored against a
+# notional 800x600 design space; the actual logical canvas is RES times that, so
+# the canvas upscales less to fill the window (crisper) and there is more room for
+# the playfield. World-space pixel values below are written as <base> * RES so the
+# relationship stays visible and RES = 1 restores the original look exactly.
+RES = 2
+SCREEN_WIDTH = 800 * RES
+SCREEN_HEIGHT = 600 * RES
 TARGET_FPS = 60
-WINDOW_FLAGS = pygame.RESIZABLE | pygame.DOUBLEBUF
+# NOTE: DOUBLEBUF is intentionally NOT set. This is a plain software window that
+# present() fully repaints every frame (window.blit of the scaled canvas), so we
+# don't need a back buffer. On macOS a double-buffered *software* window can stop
+# presenting after display.flip(): the visible buffer freezes on a stale/partial
+# frame while the Python loop keeps running and processing input (so movement and
+# audio still work but the picture is stuck). Single-buffered avoids that stall.
+WINDOW_FLAGS = pygame.RESIZABLE
 
 
 def compute_initial_window_size():
@@ -91,15 +272,19 @@ def compute_initial_window_size():
         info = pygame.display.Info()
         desktop_w, desktop_h = info.current_w, info.current_h
     scale = min(desktop_w * 0.85 / SCREEN_WIDTH, desktop_h * 0.85 / SCREEN_HEIGHT)
-    scale = max(scale, 1.0)
+    # The logical canvas is high-res (RES x), so downscaling it to fit the desktop
+    # looks fine; only guard against an absurdly tiny launch window.
+    scale = max(scale, 0.4)
     return int(SCREEN_WIDTH * scale), int(SCREEN_HEIGHT * scale)
 
 
 def open_window(size):
-    try:
-        return pygame.display.set_mode(size, WINDOW_FLAGS, vsync=1)
-    except (TypeError, pygame.error):
-        return pygame.display.set_mode(size, WINDOW_FLAGS)
+    # NOTE: vsync is intentionally NOT requested. With the high-res canvas the
+    # per-frame rescale is heavier, and on macOS a vsync-locked resizable window
+    # can stall: the SDL/window-server stops refreshing the surface (frozen image)
+    # even though the Python game loop keeps running and processing input. Frame
+    # pacing is handled by clock.tick(TARGET_FPS) instead, so vsync isn't needed.
+    return pygame.display.set_mode(size, WINDOW_FLAGS)
 
 
 window = open_window(compute_initial_window_size())
@@ -363,46 +548,46 @@ def format_radial_speed(speed, distance):
 
 
 def draw_galaxy_progress(distance, radial_speed, orbit_speed, orbit_angle):
-    progress_rect = pygame.Rect(465, 12, 300, 22)
+    progress_rect = pygame.Rect(465 * RES, 12 * RES, 300 * RES, 22 * RES)
     distance_remaining = max(0, min(1, distance / max_galaxy_distance))
     progress_color = get_distance_color(distance)
     draw_pixel_panel(screen, progress_rect, (95, 105, 125), fill=(12, 16, 26))
     pygame.draw.rect(
         screen,
         progress_color,
-        (progress_rect.x + 3, progress_rect.y + 3, int((progress_rect.width - 6) * distance_remaining), progress_rect.height - 6),
+        (progress_rect.x + 3 * RES, progress_rect.y + 3 * RES, int((progress_rect.width - 6 * RES) * distance_remaining), progress_rect.height - 6 * RES),
     )
 
     end_label = small_font.render("CORE 0 LY", True, (255, 120, 120))
     far_label = small_font.render("50,000 LY", True, (145, 165, 205))
-    screen.blit(end_label, (progress_rect.x, progress_rect.y - 16))
-    screen.blit(far_label, far_label.get_rect(topright=(progress_rect.right, progress_rect.y - 16)))
+    screen.blit(end_label, (progress_rect.x, progress_rect.y - 16 * RES))
+    screen.blit(far_label, far_label.get_rect(topright=(progress_rect.right, progress_rect.y - 16 * RES)))
 
     distance_text = small_font.render("TO CENTER: " + format_distance(distance), True, (235, 240, 255))
-    screen.blit(distance_text, (progress_rect.x, progress_rect.y + 28))
+    screen.blit(distance_text, (progress_rect.x, progress_rect.y + 28 * RES))
 
-    map_rect = pygame.Rect(620, 95, 160, 185)
+    map_rect = pygame.Rect(620 * RES, 95 * RES, 160 * RES, 185 * RES)
     draw_pixel_panel(screen, map_rect, (75, 90, 120), fill=(8, 11, 22))
-    map_center = (map_rect.centerx, map_rect.y + 92)
-    map_radius = 58
+    map_center = (map_rect.centerx, map_rect.y + 92 * RES)
+    map_radius = 58 * RES
 
-    for radius in [18, 36, 54]:
-        pygame.draw.circle(screen, (28, 35, 55), map_center, radius, 1)
+    for radius in [18 * RES, 36 * RES, 54 * RES]:
+        pygame.draw.circle(screen, (28, 35, 55), map_center, radius, RES)
 
-    pygame.draw.circle(screen, (245, 225, 130), (map_center[0], map_center[1] - map_radius), 5)
+    pygame.draw.circle(screen, (245, 225, 130), (map_center[0], map_center[1] - map_radius), 5 * RES)
     sun_text = small_font.render("SUN N", True, (245, 225, 130))
-    screen.blit(sun_text, (map_center[0] - 22, map_center[1] - map_radius - 20))
+    screen.blit(sun_text, (map_center[0] - 22 * RES, map_center[1] - map_radius - 20 * RES))
     reference_time_text = small_font.render("2026-05-15 16:30", True, (145, 165, 205))
-    screen.blit(reference_time_text, (map_rect.x + 9, map_rect.bottom - 22))
+    screen.blit(reference_time_text, (map_rect.x + 9 * RES, map_rect.bottom - 22 * RES))
 
-    pygame.draw.circle(screen, (255, 255, 255), map_center, 8)
-    pygame.draw.circle(screen, (0, 0, 0), map_center, 5)
+    pygame.draw.circle(screen, (255, 255, 255), map_center, 8 * RES)
+    pygame.draw.circle(screen, (0, 0, 0), map_center, 5 * RES)
 
-    ship_radius = max(10, int(map_radius * max(0, min(1, distance / 28000))))
+    ship_radius = max(10 * RES, int(map_radius * max(0, min(1, distance / 28000))))
     ship_x = map_center[0] + math.cos(orbit_angle) * ship_radius
     ship_y = map_center[1] + math.sin(orbit_angle) * ship_radius
-    pygame.draw.line(screen, (70, 95, 125), map_center, (ship_x, ship_y), 1)
-    screen.fill(progress_color, (int(ship_x) - 2, int(ship_y) - 2, 5, 5))
+    pygame.draw.line(screen, (70, 95, 125), map_center, (ship_x, ship_y), RES)
+    screen.fill(progress_color, (int(ship_x) - 2 * RES, int(ship_y) - 2 * RES, 5 * RES, 5 * RES))
 
     if radial_speed < -1:
         direction = "CLOSER"
@@ -418,7 +603,7 @@ def draw_galaxy_progress(distance, radial_speed, orbit_speed, orbit_angle):
     ]
     for i, line in enumerate(speed_lines):
         line_text = small_font.render(line, True, (220, 235, 255))
-        line_rect = line_text.get_rect(right=SCREEN_WIDTH - 16, bottom=SCREEN_HEIGHT - 58 + i * 20)
+        line_rect = line_text.get_rect(right=SCREEN_WIDTH - 16 * RES, bottom=SCREEN_HEIGHT - 58 * RES + i * 20 * RES)
         screen.blit(line_text, line_rect)
 
 
@@ -468,16 +653,16 @@ def draw_upgrade_screen():
     screen.blit(stage_backgrounds[min(current_stage, len(stage_backgrounds) - 1)], (0, 0))
     draw_star_layers()
 
-    draw_text_shadowed(medium_32_pixel_font, "CHOOSE SHIP UPGRADE", (235, 245, 255), center=(SCREEN_WIDTH // 2, 48))
+    draw_text_shadowed(medium_32_pixel_font, "CHOOSE SHIP UPGRADE", (235, 245, 255), center=(SCREEN_WIDTH // 2, 48 * RES))
 
-    ship_rect = player_preview_sprite.get_rect(center=(SCREEN_WIDTH // 2, 190))
-    blit_glow(ship_rect.centerx, ship_rect.centery, (60, 220, 255), 90)
+    ship_rect = player_preview_sprite.get_rect(center=(SCREEN_WIDTH // 2, 190 * RES))
+    blit_glow(ship_rect.centerx, ship_rect.centery, (60, 220, 255), 180)
     screen.blit(player_preview_sprite, ship_rect)
 
-    bracket_rect = ship_rect.inflate(44, 44)
+    bracket_rect = ship_rect.inflate(44 * RES, 44 * RES)
     bracket_color = (60, 220, 255)
-    arm = 21
-    thickness = 3
+    arm = 21 * RES
+    thickness = 3 * RES
     pygame.draw.rect(screen, bracket_color, (bracket_rect.left, bracket_rect.top, arm, thickness))
     pygame.draw.rect(screen, bracket_color, (bracket_rect.left, bracket_rect.top, thickness, arm))
     pygame.draw.rect(screen, bracket_color, (bracket_rect.right - arm, bracket_rect.top, arm, thickness))
@@ -505,10 +690,10 @@ def draw_upgrade_screen():
             accent = (100, 255, 135)
 
         draw_pixel_panel(screen, rect, accent, fill=card_color)
-        draw_text_shadowed(font, title_text, accent, center=(rect.centerx, rect.y + 34))
-        draw_text_shadowed(small_font, bonus_text, (235, 245, 255), center=(rect.centerx, rect.y + 70))
-        draw_text_shadowed(small_font, level_text, (175, 195, 225), center=(rect.centerx, rect.y + 98))
-        draw_text_shadowed(small_font, "Press " + str(i + 1), (255, 255, 255), center=(rect.centerx, rect.bottom - 24))
+        draw_text_shadowed(font, title_text, accent, center=(rect.centerx, rect.y + 34 * RES))
+        draw_text_shadowed(small_font, bonus_text, (235, 245, 255), center=(rect.centerx, rect.y + 70 * RES))
+        draw_text_shadowed(small_font, level_text, (175, 195, 225), center=(rect.centerx, rect.y + 98 * RES))
+        draw_text_shadowed(small_font, "Press " + str(i + 1), (255, 255, 255), center=(rect.centerx, rect.bottom - 24 * RES))
 
 
 OUTLINE_COLOR = (16, 14, 28)
@@ -728,26 +913,26 @@ def make_planet(base_diameter, palette, seed, ring_color=None):
 
 def make_scanline_overlay():
     overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    for y in range(0, SCREEN_HEIGHT, 3):
+    for y in range(0, SCREEN_HEIGHT, 3 * RES):
         pygame.draw.line(overlay, (0, 0, 0, 26), (0, y), (SCREEN_WIDTH, y))
-    for inset, alpha in [(0, 30), (8, 18), (16, 9)]:
-        pygame.draw.rect(overlay, (0, 0, 0, alpha), (inset, inset, SCREEN_WIDTH - inset * 2, SCREEN_HEIGHT - inset * 2), 8)
+    for inset, alpha in [(0, 30), (8 * RES, 18), (16 * RES, 9)]:
+        pygame.draw.rect(overlay, (0, 0, 0, alpha), (inset, inset, SCREEN_WIDTH - inset * 2, SCREEN_HEIGHT - inset * 2), 8 * RES)
     return overlay
 
 
 def draw_pixel_panel(surface, rect, accent, fill=HUD_FILL):
     pygame.draw.rect(surface, fill, rect)
-    pygame.draw.rect(surface, accent, rect, 2)
-    for corner_x in (rect.left, rect.right - 3):
-        for corner_y in (rect.top, rect.bottom - 3):
-            pygame.draw.rect(surface, accent, (corner_x, corner_y, 3, 3))
+    pygame.draw.rect(surface, accent, rect, 2 * RES)
+    for corner_x in (rect.left, rect.right - 3 * RES):
+        for corner_y in (rect.top, rect.bottom - 3 * RES):
+            pygame.draw.rect(surface, accent, (corner_x, corner_y, 3 * RES, 3 * RES))
 
 
 def draw_segment_bar(surface, x, y, width, height, fraction, color, segments=12):
     fraction = max(0, min(1, fraction))
-    pygame.draw.rect(surface, HUD_FILL, (x - 2, y - 2, width + 4, height + 4))
-    pygame.draw.rect(surface, HUD_BORDER, (x - 2, y - 2, width + 4, height + 4), 1)
-    cell_width = (width - (segments - 1) * 2) / segments
+    pygame.draw.rect(surface, HUD_FILL, (x - 2 * RES, y - 2 * RES, width + 4 * RES, height + 4 * RES))
+    pygame.draw.rect(surface, HUD_BORDER, (x - 2 * RES, y - 2 * RES, width + 4 * RES, height + 4 * RES), RES)
+    cell_width = (width - (segments - 1) * 2 * RES) / segments
     filled = fraction * segments
     dim_color = (color[0] // 3, color[1] // 3, color[2] // 3)
     for i in range(segments):
@@ -757,14 +942,14 @@ def draw_segment_bar(surface, x, y, width, height, fraction, color, segments=12)
             cell_color = dim_color
         else:
             continue
-        pygame.draw.rect(surface, cell_color, (int(x + i * (cell_width + 2)), y, max(1, int(cell_width)), height))
+        pygame.draw.rect(surface, cell_color, (int(x + i * (cell_width + 2 * RES)), y, max(1, int(cell_width)), height))
 
 
 def draw_text_shadowed(font_object, text, color, **anchor):
     shadow = font_object.render(text, True, TEXT_SHADOW_COLOR)
     text_surface = font_object.render(text, True, color)
     rect = text_surface.get_rect(**anchor)
-    screen.blit(shadow, (rect.x + 2, rect.y + 2))
+    screen.blit(shadow, (rect.x + 2 * RES, rect.y + 2 * RES))
     screen.blit(text_surface, rect)
     return rect
 
@@ -788,14 +973,14 @@ def fire_player_weapon():
     nose_y = player_y - player_sprite.get_height() // 2
 
     if active_weapon == "double":
-        lasers.append([player_x - 10, nose_y, 0, -laser_speed, "double"])
-        lasers.append([player_x + 10, nose_y, 0, -laser_speed, "double"])
+        lasers.append([player_x - 10 * RES, nose_y, 0, -laser_speed, "double"])
+        lasers.append([player_x + 10 * RES, nose_y, 0, -laser_speed, "double"])
     elif active_weapon == "spread":
         lasers.append([player_x, nose_y, 0, -laser_speed, "spread"])
-        lasers.append([player_x - 8, nose_y, -3, -laser_speed, "spread"])
-        lasers.append([player_x + 8, nose_y, 3, -laser_speed, "spread"])
+        lasers.append([player_x - 8 * RES, nose_y, -3 * RES, -laser_speed, "spread"])
+        lasers.append([player_x + 8 * RES, nose_y, 3 * RES, -laser_speed, "spread"])
     elif active_weapon == "heavy":
-        lasers.append([player_x, nose_y, 0, -laser_speed - 2, "heavy"])
+        lasers.append([player_x, nose_y, 0, -laser_speed - 2 * RES, "heavy"])
     else:
         lasers.append([player_x, nose_y, 0, -laser_speed, active_weapon])
 
@@ -803,6 +988,10 @@ def fire_player_weapon():
 
 
 def add_particles(x, y, color, count, speed, life, size):
+    # speed and size are pixel-space, so scale them with the render resolution;
+    # count and life are quantities/frames and stay as-is.
+    speed = speed * RES
+    size = size * RES
     dark_color = mix_color(color, (20, 16, 30), 0.6)
     for i in range(max(1, int(count * 0.6))):
         particles.append([
@@ -822,11 +1011,11 @@ def add_explosion(x, y, size_key):
 
 
 def add_score_popup(text, x, y, color, life=45):
-    score_popups.append([text, x, y, -1.2, life, color])
+    score_popups.append([text, x, y, -1.2 * RES, life, color])
 
 
 def add_shockwave(x, y, max_radius, color):
-    shockwaves.append([x, y, 6, max_radius, color])
+    shockwaves.append([x, y, 6 * RES, max_radius, color])
 
 
 def get_combo_multiplier(count):
@@ -856,9 +1045,9 @@ def bump_combo():
         milestone_flash_timer = 8
         hitstop_timer = max(hitstop_timer, 5)
         screen_shake_timer = max(screen_shake_timer, 10)
-        screen_shake_strength = max(screen_shake_strength, 5)
-        add_score_popup("x" + str(new_multiplier) + " COMBO!", SCREEN_WIDTH // 2, 240, combo_tier_colors[new_multiplier], 60)
-        add_shockwave(player_x, player_y, 70, combo_tier_colors[new_multiplier])
+        screen_shake_strength = max(screen_shake_strength, 5 * RES)
+        add_score_popup("x" + str(new_multiplier) + " COMBO!", SCREEN_WIDTH // 2, 240 * RES, combo_tier_colors[new_multiplier], 60)
+        add_shockwave(player_x, player_y, 70 * RES, combo_tier_colors[new_multiplier])
         milestone_sound.play()
 
 
@@ -869,16 +1058,16 @@ def register_kill(x, y, base_points):
     hitstop_timer = max(hitstop_timer, 2)
     lifetime_stats["total_kills"] = lifetime_stats["total_kills"] + 1
     points = base_points * score_multiplier
-    if math.hypot(x - player_x, y - player_y) < 150:
+    if math.hypot(x - player_x, y - player_y) < 150 * RES:
         points = points + base_points // 2
-        add_score_popup("CLOSE!", x, y - 34, (255, 160, 60))
+        add_score_popup("CLOSE!", x, y - 34 * RES, (255, 160, 60))
     if not high_score_beaten and high_score > 0 and score + points > high_score:
         high_score_beaten = True
-        add_score_popup("NEW HIGH SCORE!", SCREEN_WIDTH // 2, 200, (255, 230, 80), 90)
+        add_score_popup("NEW HIGH SCORE!", SCREEN_WIDTH // 2, 200 * RES, (255, 230, 80), 90)
         new_record_sound.play()
         milestone_flash_timer = 10
         screen_shake_timer = max(screen_shake_timer, 12)
-        screen_shake_strength = max(screen_shake_strength, 6)
+        screen_shake_strength = max(screen_shake_strength, 6 * RES)
     return points
 
 
@@ -886,7 +1075,7 @@ def break_combo():
     global combo_count, combo_timer, score_multiplier
 
     if combo_count >= 5:
-        add_score_popup("COMBO LOST", player_x, player_y - 40, (255, 90, 90))
+        add_score_popup("COMBO LOST", player_x, player_y - 40 * RES, (255, 90, 90))
     combo_count = 0
     combo_timer = 0
     score_multiplier = 1
@@ -906,7 +1095,7 @@ def damage_player():
 
     player_hit_timer = 45
     screen_shake_timer = 18
-    screen_shake_strength = 8
+    screen_shake_strength = 8 * RES
     player_hit_sound.play()
     add_particles(player_x, player_y, (255, 70, 70), 18, 5, 30, 4)
     add_explosion(player_x, player_y, "small")
@@ -924,59 +1113,59 @@ def draw_special_move(weapon, timer):
 
     overlay.fill((0, 0, 0, int(86 * fade)))
     stripe_alpha = int(105 * fade)
-    for i in range(-220, SCREEN_WIDTH + 260, 70):
-        x = i + int(progress * 260)
+    for i in range(-220 * RES, SCREEN_WIDTH + 260 * RES, 70 * RES):
+        x = i + int(progress * 260 * RES)
         pygame.draw.polygon(
             overlay,
             (color[0], color[1], color[2], stripe_alpha),
-            [(x, 0), (x + 34, 0), (x - 190, SCREEN_HEIGHT), (x - 224, SCREEN_HEIGHT)],
+            [(x, 0), (x + 34 * RES, 0), (x - 190 * RES, SCREEN_HEIGHT), (x - 224 * RES, SCREEN_HEIGHT)],
         )
 
     art_x = int(SCREEN_WIDTH * 0.68)
     art_y = int(SCREEN_HEIGHT * 0.45)
     glow_alpha = int(135 * fade)
-    pygame.draw.circle(overlay, (color[0], color[1], color[2], glow_alpha), (art_x, art_y), 118)
+    pygame.draw.circle(overlay, (color[0], color[1], color[2], glow_alpha), (art_x, art_y), 118 * RES)
 
     if weapon == "double":
-        pygame.draw.rect(overlay, (230, 250, 255, int(235 * fade)), (art_x - 52, art_y - 78, 22, 155), border_radius=4)
-        pygame.draw.rect(overlay, (230, 250, 255, int(235 * fade)), (art_x + 30, art_y - 78, 22, 155), border_radius=4)
-        pygame.draw.line(overlay, (*color, int(255 * fade)), (art_x - 41, art_y - 102), (art_x - 41, art_y - 188), 8)
-        pygame.draw.line(overlay, (*color, int(255 * fade)), (art_x + 41, art_y - 102), (art_x + 41, art_y - 188), 8)
-        pygame.draw.rect(overlay, (70, 95, 130, int(230 * fade)), (art_x - 70, art_y + 52, 140, 28), border_radius=6)
+        pygame.draw.rect(overlay, (230, 250, 255, int(235 * fade)), (art_x - 52 * RES, art_y - 78 * RES, 22 * RES, 155 * RES), border_radius=4 * RES)
+        pygame.draw.rect(overlay, (230, 250, 255, int(235 * fade)), (art_x + 30 * RES, art_y - 78 * RES, 22 * RES, 155 * RES), border_radius=4 * RES)
+        pygame.draw.line(overlay, (*color, int(255 * fade)), (art_x - 41 * RES, art_y - 102 * RES), (art_x - 41 * RES, art_y - 188 * RES), 8 * RES)
+        pygame.draw.line(overlay, (*color, int(255 * fade)), (art_x + 41 * RES, art_y - 102 * RES), (art_x + 41 * RES, art_y - 188 * RES), 8 * RES)
+        pygame.draw.rect(overlay, (70, 95, 130, int(230 * fade)), (art_x - 70 * RES, art_y + 52 * RES, 140 * RES, 28 * RES), border_radius=6 * RES)
     elif weapon == "spread":
         for angle in [-32, 0, 32]:
-            end_x = art_x + math.sin(math.radians(angle)) * 155
-            end_y = art_y - math.cos(math.radians(angle)) * 155
-            pygame.draw.line(overlay, (*color, int(250 * fade)), (art_x, art_y + 58), (end_x, end_y), 9)
-            pygame.draw.line(overlay, (255, 255, 255, int(235 * fade)), (art_x, art_y + 58), (end_x, end_y), 3)
-        pygame.draw.arc(overlay, (*color, int(230 * fade)), (art_x - 88, art_y - 22, 176, 120), math.radians(205), math.radians(335), 8)
+            end_x = art_x + math.sin(math.radians(angle)) * 155 * RES
+            end_y = art_y - math.cos(math.radians(angle)) * 155 * RES
+            pygame.draw.line(overlay, (*color, int(250 * fade)), (art_x, art_y + 58 * RES), (end_x, end_y), 9 * RES)
+            pygame.draw.line(overlay, (255, 255, 255, int(235 * fade)), (art_x, art_y + 58 * RES), (end_x, end_y), 3 * RES)
+        pygame.draw.arc(overlay, (*color, int(230 * fade)), (art_x - 88 * RES, art_y - 22 * RES, 176 * RES, 120 * RES), math.radians(205), math.radians(335), 8 * RES)
     elif weapon == "rapid":
-        pygame.draw.rect(overlay, (225, 245, 230, int(230 * fade)), (art_x - 74, art_y - 22, 150, 42), border_radius=8)
+        pygame.draw.rect(overlay, (225, 245, 230, int(230 * fade)), (art_x - 74 * RES, art_y - 22 * RES, 150 * RES, 42 * RES), border_radius=8 * RES)
         for i in range(6):
-            barrel_x = art_x - 55 + i * 22
-            pygame.draw.rect(overlay, (*color, int(250 * fade)), (barrel_x, art_y - 82, 10, 78), border_radius=3)
-            pygame.draw.line(overlay, (255, 255, 255, int(220 * fade)), (barrel_x + 5, art_y - 95), (barrel_x + 5, art_y - 160 - i * 7), 3)
+            barrel_x = art_x - 55 * RES + i * 22 * RES
+            pygame.draw.rect(overlay, (*color, int(250 * fade)), (barrel_x, art_y - 82 * RES, 10 * RES, 78 * RES), border_radius=3 * RES)
+            pygame.draw.line(overlay, (255, 255, 255, int(220 * fade)), (barrel_x + 5 * RES, art_y - 95 * RES), (barrel_x + 5 * RES, art_y - 160 * RES - i * 7 * RES), 3 * RES)
     elif weapon == "heavy":
         pygame.draw.polygon(
             overlay,
             (235, 235, 255, int(235 * fade)),
-            [(art_x - 36, art_y + 80), (art_x + 36, art_y + 80), (art_x + 58, art_y - 85), (art_x - 58, art_y - 85)],
+            [(art_x - 36 * RES, art_y + 80 * RES), (art_x + 36 * RES, art_y + 80 * RES), (art_x + 58 * RES, art_y - 85 * RES), (art_x - 58 * RES, art_y - 85 * RES)],
         )
-        pygame.draw.rect(overlay, (*color, int(255 * fade)), (art_x - 16, art_y - 175, 32, 165), border_radius=5)
-        pygame.draw.circle(overlay, (255, 255, 255, int(245 * fade)), (art_x, art_y - 190), 22)
-        pygame.draw.line(overlay, (*color, int(235 * fade)), (art_x, art_y - 212), (art_x, 20), 14)
+        pygame.draw.rect(overlay, (*color, int(255 * fade)), (art_x - 16 * RES, art_y - 175 * RES, 32 * RES, 165 * RES), border_radius=5 * RES)
+        pygame.draw.circle(overlay, (255, 255, 255, int(245 * fade)), (art_x, art_y - 190 * RES), 22 * RES)
+        pygame.draw.line(overlay, (*color, int(235 * fade)), (art_x, art_y - 212 * RES), (art_x, 20 * RES), 14 * RES)
 
     callout_text = special_font.render(move_name, True, color)
     callout_shadow = special_font.render(move_name, True, (255, 255, 255))
-    text_x = 48
-    text_y = int(390 - math.sin(progress * math.pi) * 14)
-    overlay.blit(callout_shadow, (text_x + 3, text_y + 3))
+    text_x = 48 * RES
+    text_y = int(390 * RES - math.sin(progress * math.pi) * 14 * RES)
+    overlay.blit(callout_shadow, (text_x + 3 * RES, text_y + 3 * RES))
     overlay.blit(callout_text, (text_x, text_y))
 
     subtitle = font.render("SPECIAL WEAPON ONLINE", True, (230, 240, 255))
-    overlay.blit(subtitle, (text_x + 8, text_y + 68))
+    overlay.blit(subtitle, (text_x + 8 * RES, text_y + 68 * RES))
     screen.blit(overlay, (0, 0))
-    blit_glow(art_x, art_y, color, 130)
+    blit_glow(art_x, art_y, color, 260)
 
 
 def spawn_boss():
@@ -985,18 +1174,77 @@ def spawn_boss():
     stage = stages[current_stage]
     boss = {
         "x": SCREEN_WIDTH // 2,
-        "y": -70,
-        "target_y": 118,
+        "y": -70 * RES,
+        "target_y": 118 * RES,
         "hp": stage["boss_hp"],
         "max_hp": stage["boss_hp"],
         "stage": current_stage,
         "timer": 0,
-        "vx": 3 + current_stage,
+        "vx": (3 + current_stage) * RES,
     }
     enemies = []
     enemy_bullets = []
     spawn_timer = 0
-    play_music("boss_" + str(current_stage), boss_music[current_stage])
+    play_music("boss", boss_music)
+
+
+# --- Escape-path guarantee -------------------------------------------------
+# Enemy fire must always leave at least one gap that is wide enough for the
+# player AND reachable from where they currently are, so deaths come from
+# misreading a pattern rather than from an impossible wall. Single aimed shots
+# are intentionally kept (you must move to dodge); these helpers only ensure
+# there is always somewhere safe to move TO.
+#
+# Half-width (world px) of the corridor we keep clear at the player's row.
+# PLAYER_HITBOX (line ~1185) is in on-screen world px (~47 wide), bullets are
+# 6 px wide, so this comfortably clears the hitbox plus a reaction margin.
+SAFE_GAP_HALF = 48 * RES
+
+
+def reachable_safe_x():
+    # The always-reachable lane center: the player's own column, clamped so the
+    # corridor stays fully on-screen. A descending bullet takes ~60-80 frames to
+    # fall while the player moves ~14+ px/frame, so this column is trivially
+    # holdable -- the gap it defines is reachable by construction.
+    return max(SAFE_GAP_HALF, min(SCREEN_WIDTH - SAFE_GAP_HALF, player_x))
+
+
+def carve_safe_gap(candidates, safe_x, gap_half=SAFE_GAP_HALF):
+    # candidates: list of [x, y, vx, vy, flag] about to be fired in ONE volley.
+    # Project each to the player's row and drop those that would land inside the
+    # safe corridor, guaranteeing a reachable opening. Small N (4-6), per-volley.
+    kept = []
+    for b in candidates:
+        if b[3] <= 0:                      # not descending -> can't wall the row
+            kept.append(b)
+            continue
+        frames = (player_y - b[1]) / b[3]
+        x_at_row = b[0] + b[2] * frames
+        if abs(x_at_row - safe_x) > gap_half:
+            kept.append(b)
+    return kept
+
+
+def corridor_blocked_if_added(new_bullet):
+    # True if adding new_bullet would leave NO reachable corridor (>= player
+    # width) anywhere in the span the player can cross before bullets arrive.
+    # Used to make independent swarm enemies hold fire rather than seal the
+    # player in. Scans enemy_bullets once, only on the rare fire-roll success.
+    reach = int(SCREEN_WIDTH * 0.42)
+    lo = max(0, player_x - reach)
+    hi = min(SCREEN_WIDTH, player_x + reach)
+    xs = []
+    for b in enemy_bullets + [new_bullet]:
+        if b[3] <= 0:
+            continue
+        frames = (player_y - b[1]) / b[3]
+        x = b[0] + b[2] * frames
+        if lo <= x <= hi:
+            xs.append(x)
+    xs.sort()
+    edges = [lo] + xs + [hi]
+    return all((edges[i + 1] - edges[i]) < 2 * SAFE_GAP_HALF
+               for i in range(len(edges) - 1))
 
 
 def fire_boss_attack(active_boss):
@@ -1006,40 +1254,49 @@ def fire_boss_attack(active_boss):
     boss_y = active_boss["y"]
 
     if stage_index == 0 and timer % 42 == 0:
-        for x_speed in [-3, -1, 1, 3]:
-            enemy_bullets.append([boss_x, boss_y + 55, x_speed, 4, 0])
+        shots = [[boss_x, boss_y + 55 * RES, x_speed * RES, 4 * RES, 0]
+                 for x_speed in [-3, -1, 1, 3]]
+        enemy_bullets.extend(carve_safe_gap(shots, reachable_safe_x()))
     elif stage_index == 1 and timer % 28 == 0:
+        shots = []
         for angle in range(25, 156, 26):
-            x_speed = math.cos(math.radians(angle)) * 3.2
-            y_speed = math.sin(math.radians(angle)) * 3.2
-            enemy_bullets.append([boss_x, boss_y + 20, x_speed, y_speed, 0])
+            x_speed = math.cos(math.radians(angle)) * 3.2 * RES
+            y_speed = math.sin(math.radians(angle)) * 3.2 * RES
+            shots.append([boss_x, boss_y + 20 * RES, x_speed, y_speed, 0])
+        enemy_bullets.extend(carve_safe_gap(shots, reachable_safe_x()))
     elif stage_index == 2:
         if timer % 38 == 0:
-            for offset in [-52, 52]:
+            # Aimed dual kept intact -- two single aimed bullets are dodgeable.
+            for offset in [-52 * RES, 52 * RES]:
                 dx = player_x - (boss_x + offset)
                 dy = player_y - boss_y
                 distance = max(1, math.hypot(dx, dy))
-                enemy_bullets.append([boss_x + offset, boss_y + 34, dx / distance * 4, dy / distance * 4, 0])
+                enemy_bullets.append([boss_x + offset, boss_y + 34 * RES, dx / distance * 4 * RES, dy / distance * 4 * RES, 0])
         if timer % 95 == 0:
-            for x_speed in [-4, -2, 0, 2, 4]:
-                enemy_bullets.append([boss_x, boss_y + 60, x_speed, 5, 0])
+            shots = [[boss_x, boss_y + 60 * RES, x_speed * RES, 5 * RES, 0]
+                     for x_speed in [-4, -2, 0, 2, 4]]
+            enemy_bullets.extend(carve_safe_gap(shots, reachable_safe_x()))
     elif stage_index == 3:
         if timer % 16 == 0:
-            lane_x = 90 + ((timer * 19) % (SCREEN_WIDTH - 180))
-            enemy_bullets.append([lane_x, boss_y + 44, 0, 5.5, 0])
+            # Single marching-lane bullet -- never a wall on its own.
+            lane_x = 90 * RES + ((timer * 19 * RES) % (SCREEN_WIDTH - 180 * RES))
+            enemy_bullets.append([lane_x, boss_y + 44 * RES, 0, 5.5 * RES, 0])
         if timer % 70 == 0:
-            for offset in [-70, 70]:
-                enemy_bullets.append([boss_x + offset, boss_y + 40, -offset / 22, 4.2, 0])
+            shots = [[boss_x + offset, boss_y + 40 * RES, -offset / 22, 4.2 * RES, 0]
+                     for offset in [-70 * RES, 70 * RES]]
+            enemy_bullets.extend(carve_safe_gap(shots, reachable_safe_x()))
     elif stage_index == 4:
         if timer % 11 == 0:
+            # Rotating spiral arms -- inter-arm gaps are inherent.
             angle = timer * 10
             for extra in [0, 180]:
-                x_speed = math.cos(math.radians(angle + extra)) * 3.5
-                y_speed = 2.8 + math.sin(math.radians(angle + extra)) * 1.2
-                enemy_bullets.append([boss_x, boss_y + 25, x_speed, y_speed, 0])
+                x_speed = math.cos(math.radians(angle + extra)) * 3.5 * RES
+                y_speed = (2.8 + math.sin(math.radians(angle + extra)) * 1.2) * RES
+                enemy_bullets.append([boss_x, boss_y + 25 * RES, x_speed, y_speed, 0])
         if timer % 75 == 0:
-            for x_speed in [-5, -2.5, 0, 2.5, 5]:
-                enemy_bullets.append([boss_x, boss_y + 58, x_speed, 4.8, 0])
+            shots = [[boss_x, boss_y + 58 * RES, x_speed * RES, 4.8 * RES, 0]
+                     for x_speed in [-5, -2.5, 0, 2.5, 5]]
+            enemy_bullets.extend(carve_safe_gap(shots, reachable_safe_x()))
 
 
 def update_boss():
@@ -1051,13 +1308,13 @@ def update_boss():
     if "dying" in boss:
         boss["dying"] = boss["dying"] - 1
         if boss["dying"] % 6 == 0:
-            blast_x = boss["x"] + random.randint(-60, 60)
-            blast_y = boss["y"] + random.randint(-40, 40)
+            blast_x = boss["x"] + random.randint(-60 * RES, 60 * RES)
+            blast_y = boss["y"] + random.randint(-40 * RES, 40 * RES)
             add_particles(blast_x, blast_y, (255, 210, 90), 14, 5, 28, 4)
             add_explosion(blast_x, blast_y, "small")
             enemy_hit_sound.play()
             screen_shake_timer = max(screen_shake_timer, 6)
-            screen_shake_strength = max(screen_shake_strength, 4)
+            screen_shake_strength = max(screen_shake_strength, 4 * RES)
         if boss["dying"] <= 0:
             finish_boss()
         return
@@ -1066,21 +1323,21 @@ def update_boss():
     stage_index = boss["stage"]
 
     if boss["y"] < boss["target_y"]:
-        boss["y"] = boss["y"] + 2
+        boss["y"] = boss["y"] + 2 * RES
     elif stage_index == 0:
-        boss["x"] = SCREEN_WIDTH // 2 + math.sin(boss["timer"] / 55) * 165
+        boss["x"] = SCREEN_WIDTH // 2 + math.sin(boss["timer"] / 55) * 165 * RES
     elif stage_index == 1:
-        boss["x"] = SCREEN_WIDTH // 2 + math.sin(boss["timer"] / 38) * 210
-        boss["y"] = boss["target_y"] + math.sin(boss["timer"] / 52) * 24
+        boss["x"] = SCREEN_WIDTH // 2 + math.sin(boss["timer"] / 38) * 210 * RES
+        boss["y"] = boss["target_y"] + math.sin(boss["timer"] / 52) * 24 * RES
     elif stage_index == 2:
-        boss["x"] = SCREEN_WIDTH // 2 + math.sin(boss["timer"] / 70) * 120
+        boss["x"] = SCREEN_WIDTH // 2 + math.sin(boss["timer"] / 70) * 120 * RES
     elif stage_index == 3:
         boss["x"] = boss["x"] + boss["vx"]
-        if boss["x"] < 145 or boss["x"] > SCREEN_WIDTH - 145:
+        if boss["x"] < 145 * RES or boss["x"] > SCREEN_WIDTH - 145 * RES:
             boss["vx"] = boss["vx"] * -1
     elif stage_index == 4:
-        boss["x"] = SCREEN_WIDTH // 2 + math.cos(boss["timer"] / 58) * 145
-        boss["y"] = boss["target_y"] + math.sin(boss["timer"] / 45) * 34
+        boss["x"] = SCREEN_WIDTH // 2 + math.cos(boss["timer"] / 58) * 145 * RES
+        boss["y"] = boss["target_y"] + math.sin(boss["timer"] / 45) * 34 * RES
 
     fire_boss_attack(boss)
 
@@ -1095,7 +1352,7 @@ def damage_boss(laser):
     enemy_hit_sound.play()
     add_particles(laser[0], laser[1], powerup_colors.get(laser[4], (255, 220, 60)), 8, 3, 18, 3)
     screen_shake_timer = max(screen_shake_timer, 4)
-    screen_shake_strength = max(screen_shake_strength, 2)
+    screen_shake_strength = max(screen_shake_strength, 2 * RES)
 
 
 def finish_boss():
@@ -1106,10 +1363,10 @@ def finish_boss():
     boss_bonus = 300 + current_stage * 100
     add_particles(boss["x"], boss["y"], (255, 210, 90), 80, 8, 60, 6)
     add_explosion(boss["x"], boss["y"], "boss")
-    add_shockwave(boss["x"], boss["y"], 160, (255, 210, 90))
-    add_shockwave(boss["x"], boss["y"], 110, (255, 255, 255))
+    add_shockwave(boss["x"], boss["y"], 160 * RES, (255, 210, 90))
+    add_shockwave(boss["x"], boss["y"], 110 * RES, (255, 255, 255))
     add_score_popup(defeated_boss + " DOWN", boss["x"], boss["y"], (255, 230, 120), 75)
-    add_score_popup("+" + str(boss_bonus), boss["x"], boss["y"] + 34, (255, 230, 120), 75)
+    add_score_popup("+" + str(boss_bonus), boss["x"], boss["y"] + 34 * RES, (255, 230, 120), 75)
     lifetime_stats["total_boss_kills"] = lifetime_stats["total_boss_kills"] + 1
     score = score + boss_bonus
     stage_score = 0
@@ -1118,7 +1375,7 @@ def finish_boss():
     enemies = []
     enemy_bullets = []
     screen_shake_timer = 28
-    screen_shake_strength = 10
+    screen_shake_strength = 10 * RES
 
     if current_stage >= len(stages):
         mission_complete = True
@@ -1143,23 +1400,25 @@ def draw_boss():
     if "dying" in boss and boss["dying"] % 6 < 3:
         screen.blit(boss_flash_sprites[boss["stage"]], boss_rect)
 
-    draw_segment_bar(screen, 170, 58, 460, 16, max(0, boss["hp"] / boss["max_hp"]), (255, 80, 90), segments=24)
-    draw_text_shadowed(small_font, stages[boss["stage"]]["boss"], (255, 230, 230), center=(400, 46))
+    draw_segment_bar(screen, 170 * RES, 58 * RES, 460 * RES, 16 * RES, max(0, boss["hp"] / boss["max_hp"]), (255, 80, 90), segments=24)
+    draw_text_shadowed(small_font, stages[boss["stage"]]["boss"], (255, 230, 230), center=(400 * RES, 46 * RES))
 
 
 def draw_stage_hud():
     stage = stages[current_stage] if current_stage < len(stages) else stages[-1]
-    draw_text_shadowed(small_font, stage["name"], (220, 235, 255), topleft=(10, 130))
+    draw_text_shadowed(small_font, stage["name"], (220, 235, 255), topleft=(10 * RES, 130 * RES))
     if boss is None:
-        draw_text_shadowed(small_font, "BOSS SIGNAL: " + str(min(stage_score, stage["goal"])) + "/" + str(stage["goal"]), (255, 220, 120), topleft=(10, 150))
+        draw_text_shadowed(small_font, "BOSS SIGNAL: " + str(min(stage_score, stage["goal"])) + "/" + str(stage["goal"]), (255, 220, 120), topleft=(10 * RES, 150 * RES))
     else:
-        draw_text_shadowed(small_font, "BOSS FIGHT", (255, 120, 120), topleft=(10, 150))
+        draw_text_shadowed(small_font, "BOSS FIGHT", (255, 120, 120), topleft=(10 * RES, 150 * RES))
 
 
-PLAYER_HITBOX = (35, 42)
-ENEMY_HITBOXES = [(28, 22), (28, 22), (28, 22), (22, 22)]
-BOSS_HITBOX_LASER = (88, 52)
-BOSS_HITBOX_BODY = (80, 46)
+# Hitboxes track the on-screen sprite size, not the world scale: body sprites grew
+# by 4/3 (scale 3 -> 4) and the boss by 5/4 (scale 4 -> 5) under RES = 2.
+PLAYER_HITBOX = (47, 56)
+ENEMY_HITBOXES = [(37, 29), (37, 29), (37, 29), (29, 29)]
+BOSS_HITBOX_LASER = (110, 65)
+BOSS_HITBOX_BODY = (100, 58)
 
 powerup_colors = {
     "double": (60, 220, 255),
@@ -1210,13 +1469,13 @@ player_rows_left = player_rows_center[:11] + [
 
 player_rows_right = [row[::-1] for row in player_rows_left]
 
-player_sprite = make_pixel_sprite(player_rows_center, player_colors, 3)
-player_sprite_left = make_pixel_sprite(player_rows_left, player_colors, 3)
-player_sprite_right = make_pixel_sprite(player_rows_right, player_colors, 3)
+player_sprite = make_pixel_sprite(player_rows_center, player_colors, 4)
+player_sprite_left = make_pixel_sprite(player_rows_left, player_colors, 4)
+player_sprite_right = make_pixel_sprite(player_rows_right, player_colors, 4)
 player_flash_center = make_flash_sprite(player_sprite)
 player_flash_left = make_flash_sprite(player_sprite_left)
 player_flash_right = make_flash_sprite(player_sprite_right)
-player_preview_sprite = make_pixel_sprite(player_rows_center, player_colors, 8)
+player_preview_sprite = make_pixel_sprite(player_rows_center, player_colors, 11)
 
 flame_rows_a = [
     ".WWW.",
@@ -1244,8 +1503,8 @@ def make_flame_frames(color):
         "R": mix_color(color, (40, 10, 10), 0.45),
     }
     return (
-        make_pixel_sprite(flame_rows_a, flame_palette, 3, outline=False),
-        make_pixel_sprite(flame_rows_b, flame_palette, 3, outline=False),
+        make_pixel_sprite(flame_rows_a, flame_palette, 4, outline=False),
+        make_pixel_sprite(flame_rows_b, flame_palette, 4, outline=False),
     )
 
 
@@ -1364,10 +1623,10 @@ kamikaze_rows_b = [
 ]
 
 enemy_sprites = [
-    (make_pixel_sprite(diver_rows_a, diver_colors, 3), make_pixel_sprite(diver_rows_b, diver_colors, 3)),
-    (make_pixel_sprite(weaver_rows_a, weaver_colors, 3), make_pixel_sprite(weaver_rows_b, weaver_colors, 3)),
-    (make_pixel_sprite(tank_rows_a, tank_colors, 3), make_pixel_sprite(tank_rows_b, tank_colors, 3)),
-    (make_pixel_sprite(kamikaze_rows_a, kamikaze_colors, 3), make_pixel_sprite(kamikaze_rows_b, kamikaze_colors, 3)),
+    (make_pixel_sprite(diver_rows_a, diver_colors, 4), make_pixel_sprite(diver_rows_b, diver_colors, 4)),
+    (make_pixel_sprite(weaver_rows_a, weaver_colors, 4), make_pixel_sprite(weaver_rows_b, weaver_colors, 4)),
+    (make_pixel_sprite(tank_rows_a, tank_colors, 4), make_pixel_sprite(tank_rows_b, tank_colors, 4)),
+    (make_pixel_sprite(kamikaze_rows_a, kamikaze_colors, 4), make_pixel_sprite(kamikaze_rows_b, kamikaze_colors, 4)),
 ]
 enemy_flash_sprites = tuple(make_flash_sprite(frame, (255, 60, 60, 130)) for frame in enemy_sprites[3])
 # Bright white hit-flash per enemy type — popped briefly when an enemy is
@@ -1379,11 +1638,11 @@ enemy_hit_flash_sprites = [
 
 def make_boss_frames(half_rows, colors, pulse_keys):
     rows = mirror_rows(half_rows)
-    frame_a = make_pixel_sprite(rows, colors, 4)
+    frame_a = make_pixel_sprite(rows, colors, 5)
     colors_b = dict(colors)
     for key in pulse_keys:
         colors_b[key] = mix_color(colors[key], (255, 255, 255), 0.45)
-    frame_b = make_pixel_sprite(rows, colors_b, 4)
+    frame_b = make_pixel_sprite(rows, colors_b, 5)
     return (frame_a, frame_b)
 
 
@@ -1559,7 +1818,7 @@ heavy_bolt_rows_b = ["..W..", ".CWC.", "CWWWC", "CWCWC", "CWWWC", "CWCWC", ".CWC
 def make_bolt_frames(color, heavy=False):
     bolt_palette = {"W": (255, 255, 255), "C": color, "D": mix_color(color, (20, 16, 40), 0.5)}
     rows_pair = (heavy_bolt_rows_a, heavy_bolt_rows_b) if heavy else (bolt_rows_a, bolt_rows_b)
-    return tuple(make_pixel_sprite(rows, bolt_palette, 3) for rows in rows_pair)
+    return tuple(make_pixel_sprite(rows, bolt_palette, 4) for rows in rows_pair)
 
 
 bolt_sprites = {}
@@ -1573,8 +1832,8 @@ spread_bolt_sprites = {
 
 enemy_bullet_palette = {"R": (255, 60, 90), "P": (255, 150, 180), "W": (255, 240, 245)}
 enemy_bullet_frames = (
-    make_pixel_sprite([".RRR.", "RPPPR", "RPWPR", "RPPPR", ".RRR."], enemy_bullet_palette, 3),
-    make_pixel_sprite([".RRR.", "RPWPR", "RWWWR", "RPWPR", ".RRR."], enemy_bullet_palette, 3),
+    make_pixel_sprite([".RRR.", "RPPPR", "RPWPR", "RPPPR", ".RRR."], enemy_bullet_palette, 4),
+    make_pixel_sprite([".RRR.", "RPWPR", "RWWWR", "RPWPR", ".RRR."], enemy_bullet_palette, 4),
 )
 
 muzzle_rows = [
@@ -1586,7 +1845,7 @@ muzzle_rows = [
 
 def make_muzzle_frames(color):
     muzzle_palette = {"W": (255, 255, 255), "C": color}
-    return [make_pixel_sprite(rows, muzzle_palette, 3, outline=False) for rows in muzzle_rows]
+    return [make_pixel_sprite(rows, muzzle_palette, 4, outline=False) for rows in muzzle_rows]
 
 
 muzzle_flash_sprites = {"single": make_muzzle_frames((255, 230, 120))}
@@ -1628,7 +1887,7 @@ def make_powerup_frames(color, glyph):
         "F": color,
         "K": (16, 14, 28),
     }
-    full = make_pixel_sprite(rows, powerup_palette, 3)
+    full = make_pixel_sprite(rows, powerup_palette, 4)
     width, height = full.get_size()
     frames = [full]
     for squash in (0.7, 0.35, 0.7):
@@ -1639,9 +1898,9 @@ def make_powerup_frames(color, glyph):
 powerup_sprites = {name: make_powerup_frames(powerup_colors[name], powerup_glyphs[name]) for name in powerup_glyphs}
 
 explosion_frames = {
-    "small": make_explosion_frames(12, 4),
-    "large": make_explosion_frames(16, 5),
-    "boss": make_explosion_frames(24, 6),
+    "small": make_explosion_frames(12, 5),
+    "large": make_explosion_frames(16, 7),
+    "boss": make_explosion_frames(24, 8),
 }
 
 stages = [
@@ -1660,7 +1919,7 @@ planet_palettes = [
     [(25, 80, 45), (60, 150, 80), (120, 210, 130)],
     [(10, 8, 16), (30, 22, 44), (60, 45, 85)],
 ]
-planet_positions = [(560, 80), (90, 110), (470, 60), (120, 70), (270, 60)]
+planet_positions = [(560 * RES, 80 * RES), (90 * RES, 110 * RES), (470 * RES, 60 * RES), (120 * RES, 70 * RES), (270 * RES, 60 * RES)]
 
 stage_backgrounds = []
 for stage_index, stage in enumerate(stages):
@@ -1676,7 +1935,7 @@ for stage_index, stage in enumerate(stages):
         background.fill(band_color, (0, band * band_height, SCREEN_WIDTH, band_height))
     background.blit(make_nebula(stage_accents[stage_index], stage_index * 31 + 7), (0, 0))
     planet_ring_color = (255, 160, 60) if stage_index == 4 else None
-    planet = make_planet(16 + stage_index * 2, planet_palettes[stage_index], stage_index * 13 + 3, planet_ring_color)
+    planet = make_planet((16 + stage_index * 2) * RES, planet_palettes[stage_index], stage_index * 13 + 3, planet_ring_color)
     background.blit(planet, planet_positions[stage_index])
     stage_backgrounds.append(background.convert())
 
@@ -1699,7 +1958,7 @@ def draw_hurt_vignette(intensity):
     hurt_overlay.fill((0, 0, 0, 0))
     bands = 50
     for i in range(bands):
-        inset = i * 3
+        inset = i * 3 * RES
         if inset * 2 >= SCREEN_HEIGHT:
             break
         alpha = int(150 * intensity * (1 - i / bands) ** 2)
@@ -1709,13 +1968,11 @@ def draw_hurt_vignette(intensity):
             hurt_overlay,
             (205, 35, 45, alpha),
             (inset, inset, SCREEN_WIDTH - inset * 2, SCREEN_HEIGHT - inset * 2),
-            3,
+            3 * RES,
         )
     screen.blit(hurt_overlay, (0, 0))
 
 
-warning_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-warning_overlay.fill((255, 30, 30))
 milestone_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
 milestone_overlay.fill((255, 255, 255))
 pause_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -1724,20 +1981,20 @@ pause_overlay.set_alpha(110)
 
 vignette_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
 for vignette_rect in [
-    (0, 0, SCREEN_WIDTH, 26),
-    (0, SCREEN_HEIGHT - 26, SCREEN_WIDTH, 26),
-    (0, 0, 26, SCREEN_HEIGHT),
-    (SCREEN_WIDTH - 26, 0, 26, SCREEN_HEIGHT),
+    (0, 0, SCREEN_WIDTH, 26 * RES),
+    (0, SCREEN_HEIGHT - 26 * RES, SCREEN_WIDTH, 26 * RES),
+    (0, 0, 26 * RES, SCREEN_HEIGHT),
+    (SCREEN_WIDTH - 26 * RES, 0, 26 * RES, SCREEN_HEIGHT),
 ]:
     pygame.draw.rect(vignette_overlay, (255, 30, 30, 65), vignette_rect)
 
-player_x = 400
-player_y = 520
+player_x = 400 * RES
+player_y = 520 * RES
 player_velocity_x = 0
 player_velocity_y = 0
-player_acceleration = 36
+player_acceleration = 36 * RES
 player_friction = 0.86
-player_max_speed = 420
+player_max_speed = 420 * RES
 
 galaxy_distance = 26000.0
 minimum_black_hole_distance = CRASH_DISTANCE_KILOMETERS / LIGHT_YEAR_KILOMETERS
@@ -1749,12 +2006,12 @@ black_hole_crash = False
 
 star_layers = []
 for layer_speed, layer_count, layer_size, layer_colors, layer_depth in [
-    (0.4, 70, 1, ((110, 120, 150), (80, 90, 115)), 0.3),
-    (1.2, 50, 2, ((180, 195, 225), (140, 155, 190)), 0.6),
-    (2.8, 30, 3, ((255, 255, 255), (150, 200, 255)), 1.0),
+    (0.4 * RES, 70, 1 * RES, ((110, 120, 150), (80, 90, 115)), 0.3),
+    (1.2 * RES, 50, 2 * RES, ((180, 195, 225), (140, 155, 190)), 0.6),
+    (2.8 * RES, 30, 3 * RES, ((255, 255, 255), (150, 200, 255)), 1.0),
 ]:
     layer_stars = [
-        [random.randint(0, SCREEN_WIDTH), random.randint(0, SCREEN_HEIGHT), random.randint(0, 6)]
+        [random.randint(0, SCREEN_WIDTH), random.randint(0, SCREEN_HEIGHT), random.randint(0, 6 * RES)]
         for _ in range(layer_count)
     ]
     star_layers.append({
@@ -1766,12 +2023,12 @@ for layer_speed, layer_count, layer_size, layer_colors, layer_depth in [
     })
 
 lasers = []
-laser_speed = 10
+laser_speed = 10 * RES
 fire_timer = 0
 fire_delay = 12
 
 powerups = []
-powerup_speed = 2
+powerup_speed = 2 * RES
 powerup_timer = 0
 powerup_spawn_delay = 420
 active_weapon = "single"
@@ -1843,17 +2100,17 @@ shield_max = 100
 shield_current = shield_max
 upgrade_screen = False
 
-font = pygame.font.SysFont("monospace", 24)
-small_font = pygame.font.SysFont("monospace", 16)
-big_64pixel_font = pygame.font.SysFont("monospace", 64)
-medium_32_pixel_font = pygame.font.SysFont("monospace", 32)
-special_font = pygame.font.SysFont("monospace", 54, bold=True)
+font = pygame.font.SysFont("monospace", 24 * RES)
+small_font = pygame.font.SysFont("monospace", 16 * RES)
+big_64pixel_font = pygame.font.SysFont("monospace", 64 * RES)
+medium_32_pixel_font = pygame.font.SysFont("monospace", 32 * RES)
+special_font = pygame.font.SysFont("monospace", 54 * RES, bold=True)
 paused = False
-pause_button = pygame.Rect(350, 10, 100, 34)
+pause_button = pygame.Rect(350 * RES, 10 * RES, 100 * RES, 34 * RES)
 upgrade_buttons = {
-    "guns": pygame.Rect(70, 400, 200, 145),
-    "shields": pygame.Rect(300, 400, 200, 145),
-    "engine": pygame.Rect(530, 400, 200, 145),
+    "guns": pygame.Rect(70 * RES, 400 * RES, 200 * RES, 145 * RES),
+    "shields": pygame.Rect(300 * RES, 400 * RES, 200 * RES, 145 * RES),
+    "engine": pygame.Rect(530 * RES, 400 * RES, 200 * RES, 145 * RES),
 }
 play_music("stage_0", stage_music[0])
 app_running = True
@@ -1896,8 +2153,8 @@ while app_running:
             else:
                 current_spawn_delay = stage["spawn_delay"]
             enemies_per_spawn = 1 + min(current_stage // 2, 2)
-            current_enemy_speed = enemy_speed + stage["speed"]
-            current_enemy_bullet_speed = enemy_bullet_speed + min(current_stage, 3)
+            current_enemy_speed = (enemy_speed + stage["speed"]) * RES
+            current_enemy_bullet_speed = (enemy_bullet_speed + min(current_stage, 3)) * RES
             enemy_fire_roll = stage["fire_roll"]
 
             if weapon_timer > 0:
@@ -1940,15 +2197,15 @@ while app_running:
 
             powerup_timer = powerup_timer + 1
             if powerup_timer >= powerup_spawn_delay:
-                powerup_x = random.randint(40, SCREEN_WIDTH - 40)
+                powerup_x = random.randint(40 * RES, SCREEN_WIDTH - 40 * RES)
                 powerup_type = random.choice(weapon_types)
-                powerups.append([powerup_x, -25, powerup_type])
+                powerups.append([powerup_x, -25 * RES, powerup_type])
                 powerup_timer = 0
 
             new_powerups = []
             for powerup in powerups:
                 powerup[1] = powerup[1] + powerup_speed
-                if powerup[1] < SCREEN_HEIGHT + 30:
+                if powerup[1] < SCREEN_HEIGHT + 30 * RES:
                     new_powerups.append(powerup)
             powerups = new_powerups
 
@@ -1965,8 +2222,8 @@ while app_running:
                 spawn_timer = spawn_timer + 1
                 if spawn_timer >= current_spawn_delay:
                     for i in range(enemies_per_spawn):
-                        enemy_x = random.randint(30, SCREEN_WIDTH - 30)
-                        enemy_y = -30 - i * 45
+                        enemy_x = random.randint(30 * RES, SCREEN_WIDTH - 30 * RES)
+                        enemy_y = -30 * RES - i * 45 * RES
                         if current_stage == 0:
                             enemy_type = random.randint(0, 1)
                         elif random.random() < 0.13:
@@ -1989,42 +2246,52 @@ while app_running:
                 if enemy[7] > 0:
                     enemy[7] = enemy[7] - 1
                 if enemy[2] == 0:
-                    if enemy[6] == 0 and enemy[1] > 130 and abs(enemy[0] - player_x) < 90:
+                    if enemy[6] == 0 and enemy[1] > 130 * RES and abs(enemy[0] - player_x) < 90 * RES:
                         enemy[6] = 1
-                        enemy[4] = max(-4, min(4, (player_x - enemy[0]) / 40))
+                        enemy[4] = max(-4 * RES, min(4 * RES, (player_x - enemy[0]) / 40))
                     if enemy[6] == 1:
                         enemy[0] = enemy[0] + enemy[4]
                         enemy[1] = enemy[1] + current_enemy_speed * 2.6
-                        add_particles(enemy[0], enemy[1] - 14, (255, 150, 50), 2, 1, 10, 2)
+                        add_particles(enemy[0], enemy[1] - 14 * RES, (255, 150, 50), 2, 1, 10, 2)
                     else:
                         enemy[1] = enemy[1] + current_enemy_speed
                 elif enemy[2] == 1:
-                    enemy[0] = enemy[0] + math.sin(enemy[5] / 16) * 2.6
+                    enemy[0] = enemy[0] + math.sin(enemy[5] / 16) * 2.6 * RES
                     enemy[1] = enemy[1] + current_enemy_speed
                 elif enemy[2] == 2:
                     enemy[1] = enemy[1] + current_enemy_speed * 0.55
                 else:
                     if player_x > enemy[0]:
-                        enemy[4] = min(3.5, enemy[4] + 0.18)
+                        enemy[4] = min(3.5 * RES, enemy[4] + 0.18 * RES)
                     else:
-                        enemy[4] = max(-3.5, enemy[4] - 0.18)
+                        enemy[4] = max(-3.5 * RES, enemy[4] - 0.18 * RES)
                     enemy[0] = enemy[0] + enemy[4]
                     enemy[1] = enemy[1] + current_enemy_speed * 1.7
 
-                if enemy[1] > 20:
+                if enemy[1] > 20 * RES:
                     bullet_y = enemy[1] + enemy_sprites[enemy[2]][0].get_height() // 2
+                    # Each shot is held if it would seal off the player's last
+                    # reachable corridor, so independent swarm fire never walls
+                    # the player in (aimed pressure is otherwise preserved).
                     if enemy[2] == 1 and random.randint(1, enemy_fire_roll + 40) == 1:
                         aim_x = player_x - enemy[0]
                         aim_y = player_y - bullet_y
                         aim_distance = max(1, math.hypot(aim_x, aim_y))
-                        enemy_bullets.append([enemy[0], bullet_y, aim_x / aim_distance * current_enemy_bullet_speed, aim_y / aim_distance * current_enemy_bullet_speed, 0])
+                        shot = [enemy[0], bullet_y, aim_x / aim_distance * current_enemy_bullet_speed, aim_y / aim_distance * current_enemy_bullet_speed, 0]
+                        if not corridor_blocked_if_added(shot):
+                            enemy_bullets.append(shot)
                     elif enemy[2] == 2 and random.randint(1, enemy_fire_roll) == 1:
-                        enemy_bullets.append([enemy[0], bullet_y, -1.5, current_enemy_bullet_speed, 0])
-                        enemy_bullets.append([enemy[0], bullet_y, 1.5, current_enemy_bullet_speed, 0])
+                        left = [enemy[0], bullet_y, -1.5 * RES, current_enemy_bullet_speed, 0]
+                        right = [enemy[0], bullet_y, 1.5 * RES, current_enemy_bullet_speed, 0]
+                        if not corridor_blocked_if_added(left):
+                            enemy_bullets.append(left)
+                            enemy_bullets.append(right)
                     elif enemy[2] == 0 and enemy[6] == 0 and random.randint(1, enemy_fire_roll) == 1:
-                        bullet_x_speed = random.choice([-3, -2, -1, 0, 1, 2, 3])
-                        enemy_bullets.append([enemy[0], bullet_y, bullet_x_speed, current_enemy_bullet_speed, 0])
-                if enemy[1] < SCREEN_HEIGHT + 40 and -60 < enemy[0] < SCREEN_WIDTH + 60:
+                        bullet_x_speed = random.choice([-3, -2, -1, 0, 1, 2, 3]) * RES
+                        shot = [enemy[0], bullet_y, bullet_x_speed, current_enemy_bullet_speed, 0]
+                        if not corridor_blocked_if_added(shot):
+                            enemy_bullets.append(shot)
+                if enemy[1] < SCREEN_HEIGHT + 40 * RES and -60 * RES < enemy[0] < SCREEN_WIDTH + 60 * RES:
                     new_enemies.append(enemy)
             enemies = new_enemies
 
@@ -2032,7 +2299,7 @@ while app_running:
             for bullet in enemy_bullets:
                 bullet[0] = bullet[0] + bullet[2]
                 bullet[1] = bullet[1] + bullet[3]
-                if -20 < bullet[0] < SCREEN_WIDTH + 20 and bullet[1] < SCREEN_HEIGHT + 20:
+                if -20 * RES < bullet[0] < SCREEN_WIDTH + 20 * RES and bullet[1] < SCREEN_HEIGHT + 20 * RES:
                     new_enemy_bullets.append(bullet)
             enemy_bullets = new_enemy_bullets
 
@@ -2041,16 +2308,16 @@ while app_running:
             # it away and it fades from bright to dark over its short life.
             trail_color = powerup_colors.get(active_weapon, (255, 150, 30))
             trail_dark = mix_color(trail_color, (20, 16, 30), 0.6)
-            trail_origin_y = player_y + player_sprite.get_height() // 2 - 2
+            trail_origin_y = player_y + player_sprite.get_height() // 2 - 2 * RES
             for _ in range(2):
                 particles.append([
-                    player_x + random.uniform(-3, 3),
+                    player_x + random.uniform(-3 * RES, 3 * RES),
                     trail_origin_y,
-                    random.uniform(-0.5, 0.5),
-                    random.uniform(1.8, 3.4),
+                    random.uniform(-0.5 * RES, 0.5 * RES),
+                    random.uniform(1.8 * RES, 3.4 * RES),
                     random.randint(9, 15),
                     trail_color,
-                    random.randint(1, 2),
+                    random.randint(1, 2 * RES),
                     trail_dark,
                 ])
 
@@ -2058,7 +2325,7 @@ while app_running:
             for particle in particles:
                 particle[0] = particle[0] + particle[2]
                 particle[1] = particle[1] + particle[3]
-                particle[3] = particle[3] + 0.12
+                particle[3] = particle[3] + 0.12 * RES
                 particle[4] = particle[4] - 1
                 if particle[4] > 0:
                     new_particles.append(particle)
@@ -2073,14 +2340,14 @@ while app_running:
 
             new_shockwaves = []
             for shockwave in shockwaves:
-                shockwave[2] = shockwave[2] + 7
+                shockwave[2] = shockwave[2] + 7 * RES
                 if shockwave[2] < shockwave[3]:
                     new_shockwaves.append(shockwave)
             shockwaves = new_shockwaves
 
             new_score_popups = []
             for popup in score_popups:
-                popup[1] = popup[1] + random.uniform(-0.2, 0.2)
+                popup[1] = popup[1] + random.uniform(-0.2 * RES, 0.2 * RES)
                 popup[2] = popup[2] + popup[3]
                 popup[4] = popup[4] - 1
                 if popup[4] > 0:
@@ -2089,8 +2356,8 @@ while app_running:
 
             surviving_lasers = []
             for laser in lasers:
-                laser_width = 12 if laser[4] == "heavy" else 4
-                laser_rect = pygame.Rect(laser[0] - laser_width // 2, laser[1], laser_width, 18)
+                laser_width = (12 if laser[4] == "heavy" else 4) * RES
+                laser_rect = pygame.Rect(laser[0] - laser_width // 2, laser[1], laser_width, 18 * RES)
                 hit_something = False
 
                 surviving_enemies = []
@@ -2110,10 +2377,10 @@ while app_running:
                             add_explosion(enemy[0], enemy[1], "large" if enemy[2] == 2 else "small")
                             add_particles(enemy[0], enemy[1], powerup_colors.get(laser[4], (255, 220, 60)), 24, 4, 32, 4)
                             add_particles(enemy[0], enemy[1], (255, 130, 55), 10, 5, 24, 3)
-                            add_shockwave(enemy[0], enemy[1], 34, powerup_colors.get(laser[4], (255, 220, 60)))
-                            add_score_popup("+" + str(points), enemy[0], enemy[1] - 12, powerup_colors.get(laser[4], (255, 255, 255)))
+                            add_shockwave(enemy[0], enemy[1], 34 * RES, powerup_colors.get(laser[4], (255, 220, 60)))
+                            add_score_popup("+" + str(points), enemy[0], enemy[1] - 12 * RES, powerup_colors.get(laser[4], (255, 255, 255)))
                             screen_shake_timer = max(screen_shake_timer, 6)
-                            screen_shake_strength = max(screen_shake_strength, 3)
+                            screen_shake_strength = max(screen_shake_strength, 3 * RES)
                         else:
                             add_particles(enemy[0], enemy[1], powerup_colors.get(laser[4], (255, 220, 60)), 6, 2, 12, 2)
                             enemy[7] = 4
@@ -2130,7 +2397,7 @@ while app_running:
                         if boss["hp"] <= 0:
                             boss["dying"] = 75
                             hitstop_timer = max(hitstop_timer, 14)
-                            add_shockwave(boss["x"], boss["y"], 160, (255, 210, 90))
+                            add_shockwave(boss["x"], boss["y"], 160 * RES, (255, 210, 90))
 
                 if not hit_something or laser[4] == "heavy":
                     surviving_lasers.append(laser)
@@ -2140,7 +2407,7 @@ while app_running:
 
             surviving_powerups = []
             for powerup in powerups:
-                powerup_rect = pygame.Rect(powerup[0] - 15, powerup[1] - 15, 30, 30)
+                powerup_rect = pygame.Rect(powerup[0] - 15 * RES, powerup[1] - 15 * RES, 30 * RES, 30 * RES)
                 if player_rect.colliderect(powerup_rect):
                     active_weapon = powerup[2]
                     weapon_timer = weapon_duration
@@ -2149,9 +2416,9 @@ while app_running:
                     special_move_timer = special_move_duration
                     powerup_collect_sound.play()
                     add_particles(powerup[0], powerup[1], powerup_colors[active_weapon], 28, 4, 36, 4)
-                    add_score_popup(active_weapon.upper(), powerup[0], powerup[1] - 18, powerup_colors[active_weapon])
+                    add_score_popup(active_weapon.upper(), powerup[0], powerup[1] - 18 * RES, powerup_colors[active_weapon])
                     screen_shake_timer = max(screen_shake_timer, 8)
-                    screen_shake_strength = max(screen_shake_strength, 4)
+                    screen_shake_strength = max(screen_shake_strength, 4 * RES)
                 else:
                     surviving_powerups.append(powerup)
             powerups = surviving_powerups
@@ -2173,10 +2440,10 @@ while app_running:
                     damage_player()
                     add_particles(player_x, player_y, (255, 100, 120), 24, 5, 28, 4)
 
-            graze_rect = player_rect.inflate(34, 34)
+            graze_rect = player_rect.inflate(34 * RES, 34 * RES)
             surviving_enemy_bullets = []
             for bullet in enemy_bullets:
-                bullet_rect = pygame.Rect(bullet[0] - 3, bullet[1], 6, 14)
+                bullet_rect = pygame.Rect(bullet[0] - 3 * RES, bullet[1], 6 * RES, 14 * RES)
                 if player_rect.colliderect(bullet_rect):
                     damage_player()
                     add_particles(bullet[0], bullet[1], (255, 90, 120), 12, 4, 24, 3)
@@ -2191,7 +2458,7 @@ while app_running:
                         graze_pulse_timer = 6
                         add_particles(bullet[0], bullet[1], (120, 230, 255), 4, 2, 14, 2)
                         if graze_popup_cooldown == 0:
-                            add_score_popup("GRAZE +" + str(2 * score_multiplier), player_x, player_y - 44, (120, 230, 255))
+                            add_score_popup("GRAZE +" + str(2 * score_multiplier), player_x, player_y - 44 * RES, (120, 230, 255))
                             graze_sound.play()
                             graze_popup_cooldown = 20
                     surviving_enemy_bullets.append(bullet)
@@ -2204,7 +2471,7 @@ while app_running:
             for laser in lasers:
                 laser[0] = laser[0] + laser[2]
                 laser[1] = laser[1] + laser[3]
-                if -20 < laser[0] < SCREEN_WIDTH + 20 and laser[1] > -30:
+                if -20 * RES < laser[0] < SCREEN_WIDTH + 20 * RES and laser[1] > -30 * RES:
                     new_lasers.append(laser)
             lasers = new_lasers
 
@@ -2241,7 +2508,7 @@ while app_running:
             if galaxy_distance <= minimum_black_hole_distance and radial_speed_ly_per_second < 0:
                 black_hole_crash = True
                 screen_shake_timer = 35
-                screen_shake_strength = 14
+                screen_shake_strength = 14 * RES
                 running = False
             orbit_angle = orbit_angle + math.radians(orbit_speed_degrees_per_second) * seconds_passed
 
@@ -2287,13 +2554,13 @@ while app_running:
                 bolt_sprite = bolt_sprites[laser[4]][bolt_frame]
             bolt_rect = bolt_sprite.get_rect(center=(laser[0] + world_offset_x, laser[1] + world_offset_y))
             screen.blit(bolt_sprite, bolt_rect)
-            blit_glow(laser[0] + world_offset_x, laser[1] - 6 + world_offset_y, bolt_colors[laser[4]], 12)
+            blit_glow(laser[0] + world_offset_x, laser[1] - 6 * RES + world_offset_y, bolt_colors[laser[4]], 16)
 
         orb_sprite = enemy_bullet_frames[(frame_tick // 100) % 2]
         for bullet in enemy_bullets:
             orb_rect = orb_sprite.get_rect(center=(bullet[0] + world_offset_x, bullet[1] + world_offset_y))
             screen.blit(orb_sprite, orb_rect)
-            blit_glow(bullet[0] + world_offset_x, bullet[1] + world_offset_y, (255, 60, 90), 10)
+            blit_glow(bullet[0] + world_offset_x, bullet[1] + world_offset_y, (255, 60, 90), 13)
 
         for enemy in enemies:
             enemy_frame = (enemy[5] // 8) % 2
@@ -2312,11 +2579,11 @@ while app_running:
             frame = frame_set[min(len(frame_set) - 1, explosion[2] // 3)]
             screen.blit(frame, frame.get_rect(center=(explosion[0] + world_offset_x, explosion[1] + world_offset_y)))
             if explosion[2] < 9:
-                blit_glow(explosion[0] + world_offset_x, explosion[1] + world_offset_y, (255, 160, 60), 30)
+                blit_glow(explosion[0] + world_offset_x, explosion[1] + world_offset_y, (255, 160, 60), 40)
 
         spin_frame = (frame_tick // 120) % 4
         for powerup in powerups:
-            blit_glow(powerup[0] + world_offset_x, powerup[1] + world_offset_y, powerup_colors[powerup[2]], 22)
+            blit_glow(powerup[0] + world_offset_x, powerup[1] + world_offset_y, powerup_colors[powerup[2]], 29)
             powerup_sprite = powerup_sprites[powerup[2]][spin_frame]
             powerup_rect = powerup_sprite.get_rect(center=(powerup[0] + world_offset_x, powerup[1] + world_offset_y))
             screen.blit(powerup_sprite, powerup_rect)
@@ -2334,11 +2601,11 @@ while app_running:
             )
 
         for shockwave in shockwaves:
-            shockwave_radius = max(3, int(shockwave[2] // 3) * 3)
+            shockwave_radius = max(3 * RES, int(shockwave[2] // (3 * RES)) * (3 * RES))
             shockwave_center = (int(shockwave[0] + world_offset_x), int(shockwave[1] + world_offset_y))
-            pygame.draw.circle(screen, shockwave[4], shockwave_center, shockwave_radius, 3)
-            if shockwave_radius > 6:
-                pygame.draw.circle(screen, (255, 255, 255), shockwave_center, shockwave_radius - 4, 1)
+            pygame.draw.circle(screen, shockwave[4], shockwave_center, shockwave_radius, 3 * RES)
+            if shockwave_radius > 6 * RES:
+                pygame.draw.circle(screen, (255, 255, 255), shockwave_center, shockwave_radius - 4 * RES, RES)
 
         if muzzle_flash_timer > 0:
             nose_x = int(player_x + world_offset_x)
@@ -2346,14 +2613,14 @@ while app_running:
             flash_frames = muzzle_flash_sprites.get(active_weapon, muzzle_flash_sprites["single"])
             flash_sprite = flash_frames[max(0, 3 - muzzle_flash_timer)]
             screen.blit(flash_sprite, flash_sprite.get_rect(center=(nose_x, nose_y)))
-            blit_glow(nose_x, nose_y, bolt_colors.get(active_weapon, (255, 230, 120)), 14)
+            blit_glow(nose_x, nose_y, bolt_colors.get(active_weapon, (255, 230, 120)), 19)
 
         flame_pair = flame_frames.get(active_weapon, flame_frames["single"])
         flame_sprite = flame_pair[(frame_tick // 66) % 2]
         flame_x = int(player_x + world_offset_x)
-        flame_y = int(player_y + player_sprite.get_height() // 2 - 4 + world_offset_y)
+        flame_y = int(player_y + player_sprite.get_height() // 2 - 4 * RES + world_offset_y)
         screen.blit(flame_sprite, flame_sprite.get_rect(midtop=(flame_x, flame_y)))
-        blit_glow(flame_x, flame_y + 8, powerup_colors.get(active_weapon, (255, 150, 30)), 14)
+        blit_glow(flame_x, flame_y + 16, powerup_colors.get(active_weapon, (255, 150, 30)), 19)
 
         if player_velocity_x < -70:
             current_player_sprite = player_sprite_left
@@ -2369,13 +2636,13 @@ while app_running:
         if player_hit_timer > 0 and player_hit_timer % 6 < 3:
             screen.blit(current_player_flash, player_rect)
         if graze_pulse_timer > 0:
-            pygame.draw.circle(screen, (120, 230, 255), (int(player_x + world_offset_x), int(player_y + world_offset_y)), 30, 2)
+            pygame.draw.circle(screen, (120, 230, 255), (int(player_x + world_offset_x), int(player_y + world_offset_y)), 30 * RES, 2 * RES)
 
         for popup in score_popups:
             popup_shadow = font.render(popup[0], True, TEXT_SHADOW_COLOR)
             popup_text = font.render(popup[0], True, popup[5])
             popup_rect = popup_text.get_rect(center=(popup[1] + world_offset_x, popup[2] + world_offset_y))
-            screen.blit(popup_shadow, (popup_rect.x + 2, popup_rect.y + 2))
+            screen.blit(popup_shadow, (popup_rect.x + 2 * RES, popup_rect.y + 2 * RES))
             screen.blit(popup_text, popup_rect)
 
         draw_special_move(special_move_weapon, special_move_timer)
@@ -2384,46 +2651,44 @@ while app_running:
 
         # Translucent backing panel so the left stat cluster reads as a unit
         # against the busy starfield, matching the right-side HUD panels.
-        hud_panel_h = (102 if active_weapon != "single" else 72) + 32
-        hud_panel = pygame.Surface((198, hud_panel_h), pygame.SRCALPHA)
+        hud_panel_h = ((102 if active_weapon != "single" else 72) + 32) * RES
+        hud_panel = pygame.Surface((198 * RES, hud_panel_h), pygame.SRCALPHA)
         hud_panel.fill((10, 14, 26, 145))
-        screen.blit(hud_panel, (4, 4))
-        hud_panel_rect = pygame.Rect(4, 4, 198, hud_panel_h)
-        pygame.draw.rect(screen, (60, 80, 120), hud_panel_rect, 2)
-        for corner_x in (hud_panel_rect.left, hud_panel_rect.right - 3):
-            for corner_y in (hud_panel_rect.top, hud_panel_rect.bottom - 3):
-                pygame.draw.rect(screen, (60, 80, 120), (corner_x, corner_y, 3, 3))
+        screen.blit(hud_panel, (4 * RES, 4 * RES))
+        hud_panel_rect = pygame.Rect(4 * RES, 4 * RES, 198 * RES, hud_panel_h)
+        pygame.draw.rect(screen, (60, 80, 120), hud_panel_rect, 2 * RES)
+        for corner_x in (hud_panel_rect.left, hud_panel_rect.right - 3 * RES):
+            for corner_y in (hud_panel_rect.top, hud_panel_rect.bottom - 3 * RES):
+                pygame.draw.rect(screen, (60, 80, 120), (corner_x, corner_y, 3 * RES, 3 * RES))
 
         score_color = (255, 230, 80) if high_score_beaten else (255, 255, 255)
-        draw_text_shadowed(font, "Score: " + str(score), score_color, topleft=(10, 10))
-        draw_text_shadowed(font, "Lives: " + str(lives), (255, 255, 255), topleft=(10, 40))
+        draw_text_shadowed(font, "Score: " + str(score), score_color, topleft=(10 * RES, 10 * RES))
+        draw_text_shadowed(font, "Lives: " + str(lives), (255, 255, 255), topleft=(10 * RES, 40 * RES))
         if lives <= 5 and pygame.time.get_ticks() % 700 < 450:
-            draw_text_shadowed(font, "DANGER", (255, 80, 80), topleft=(130, 40))
+            draw_text_shadowed(font, "DANGER", (255, 80, 80), topleft=(130 * RES, 40 * RES))
         if combo_count >= 2:
             combo_color = combo_tier_colors[score_multiplier]
-            draw_text_shadowed(medium_32_pixel_font, "x" + str(score_multiplier), combo_color, topleft=(205, 6))
-            draw_text_shadowed(small_font, str(combo_count) + " CHAIN", (220, 235, 255), topleft=(262, 16))
-            draw_segment_bar(screen, 205, 42, 110, 8, combo_timer / combo_window, combo_color, segments=10)
+            draw_text_shadowed(medium_32_pixel_font, "x" + str(score_multiplier), combo_color, topleft=(205 * RES, 6 * RES))
+            draw_text_shadowed(small_font, str(combo_count) + " CHAIN", (220, 235, 255), topleft=(262 * RES, 16 * RES))
+            draw_segment_bar(screen, 205 * RES, 42 * RES, 110 * RES, 8 * RES, combo_timer / combo_window, combo_color, segments=10)
         if boss is None and boss_warning_timer == 0 and 600 <= wave_timer < 760 and combo_count >= 5:
             if pygame.time.get_ticks() % 800 < 500:
-                draw_text_shadowed(small_font, "HOLD THE COMBO", (255, 220, 80), topleft=(205, 56))
+                draw_text_shadowed(small_font, "HOLD THE COMBO", (255, 220, 80), topleft=(205 * RES, 56 * RES))
         if active_weapon != "single":
             seconds_left = weapon_timer // 60 + 1
-            draw_text_shadowed(font, "Weapon: " + active_weapon.upper() + " " + str(seconds_left), powerup_colors[active_weapon], topleft=(10, 70))
+            draw_text_shadowed(font, "Weapon: " + active_weapon.upper() + " " + str(seconds_left), powerup_colors[active_weapon], topleft=(10 * RES, 70 * RES))
 
-        shield_y = 102 if active_weapon != "single" else 72
+        shield_y = (102 if active_weapon != "single" else 72) * RES
         shield_fill = 0 if shield_max <= 0 else max(0, min(1, shield_current / shield_max))
-        draw_segment_bar(screen, 10, shield_y, 180, 12, shield_fill, (70, 220, 255), segments=12)
-        draw_text_shadowed(small_font, "Shield " + str(int(shield_current)) + "/" + str(int(shield_max)), (210, 235, 255), topleft=(10, shield_y + 16))
+        draw_segment_bar(screen, 10 * RES, shield_y, 180 * RES, 12 * RES, shield_fill, (70, 220, 255), segments=12)
+        draw_text_shadowed(small_font, "Shield " + str(int(shield_current)) + "/" + str(int(shield_max)), (210, 235, 255), topleft=(10 * RES, shield_y + 16 * RES))
 
         draw_stage_hud()
         draw_galaxy_progress(galaxy_distance, radial_speed_ly_per_second, orbit_speed_degrees_per_second, orbit_angle)
 
         if boss_warning_timer > 0:
-            warning_overlay.set_alpha(int(40 + 25 * math.sin(boss_warning_timer / 6)))
-            screen.blit(warning_overlay, (0, 0))
             if boss_warning_timer % 30 < 18:
-                draw_text_shadowed(medium_32_pixel_font, "!! " + stages[current_stage]["boss"].upper() + " APPROACHING !!", (255, 80, 80), center=(SCREEN_WIDTH // 2, 230))
+                draw_text_shadowed(medium_32_pixel_font, "!! " + stages[current_stage]["boss"].upper() + " APPROACHING !!", (255, 80, 80), center=(SCREEN_WIDTH // 2, 230 * RES))
 
         if lives <= 5:
             vignette_overlay.set_alpha(int(160 + 95 * math.sin(pygame.time.get_ticks() / 150)))
@@ -2471,8 +2736,8 @@ while app_running:
 
     game_over = True
     show_replay_prompt = True
-    yes_button = pygame.Rect(160, 270, 200, 80)
-    no_button = pygame.Rect(440, 270, 200, 80)
+    yes_button = pygame.Rect(160 * RES, 270 * RES, 200 * RES, 80 * RES)
+    no_button = pygame.Rect(440 * RES, 270 * RES, 200 * RES, 80 * RES)
 
     while game_over:
         if SHOT_MODE:
@@ -2512,8 +2777,8 @@ while app_running:
             draw_text_shadowed(medium_32_pixel_font, "YES", (255, 255, 255), center=yes_button.center)
             draw_text_shadowed(medium_32_pixel_font, "NO", (255, 255, 255), center=no_button.center)
 
-            draw_text_shadowed(medium_32_pixel_font, "FLY AGAIN?", (235, 245, 255), center=(SCREEN_WIDTH // 2, 200))
-            draw_text_shadowed(small_font, "R / Y - FLY AGAIN    N - QUIT", (180, 200, 230), center=(SCREEN_WIDTH // 2, 390))
+            draw_text_shadowed(medium_32_pixel_font, "FLY AGAIN?", (235, 245, 255), center=(SCREEN_WIDTH // 2, 200 * RES))
+            draw_text_shadowed(small_font, "R / Y - FLY AGAIN    N - QUIT", (180, 200, 230), center=(SCREEN_WIDTH // 2, 390 * RES))
         else:
             if black_hole_crash:
                 end_title = "BLACK HOLE CRASH"
@@ -2521,17 +2786,17 @@ while app_running:
                 end_title = "MISSION COMPLETE"
             else:
                 end_title = "GAME OVER"
-            draw_text_shadowed(big_64pixel_font, end_title, (255, 50, 50), topleft=(100, 100))
+            draw_text_shadowed(big_64pixel_font, end_title, (255, 50, 50), topleft=(100 * RES, 100 * RES))
 
-            stats_panel = pygame.Rect(80, 280, 640, 274)
+            stats_panel = pygame.Rect(80 * RES, 280 * RES, 640 * RES, 274 * RES)
             draw_pixel_panel(screen, stats_panel, HUD_BORDER)
 
-            draw_text_shadowed(medium_32_pixel_font, "FINAL SCORE: " + str(score), (255, 255, 255), topleft=(100, 300))
-            draw_text_shadowed(medium_32_pixel_font, "HIGH SCORE: " + str(high_score), (255, 220, 80), topleft=(100, 350))
-            draw_text_shadowed(font, "BEST SCORE TIME: " + high_score_time, (200, 220, 255), topleft=(100, 395))
-            draw_text_shadowed(font, "BEST COMBO: " + str(best_combo_this_run) + " CHAIN (x" + str(get_combo_multiplier(best_combo_this_run)) + ")    GRAZES: " + str(graze_count_this_run), (120, 230, 255), topleft=(100, 430))
-            draw_text_shadowed(font, "ALL-TIME: " + str(lifetime_stats["total_kills"]) + " KILLS / " + str(lifetime_stats["total_boss_kills"]) + " BOSSES / " + str(lifetime_stats["total_runs"]) + " RUNS", (200, 220, 255), topleft=(100, 460))
-            draw_text_shadowed(medium_32_pixel_font, "CLOSE THE WINDOW TO EXIT", (150, 150, 150), topleft=(100, 510))
+            draw_text_shadowed(medium_32_pixel_font, "FINAL SCORE: " + str(score), (255, 255, 255), topleft=(100 * RES, 300 * RES))
+            draw_text_shadowed(medium_32_pixel_font, "HIGH SCORE: " + str(high_score), (255, 220, 80), topleft=(100 * RES, 350 * RES))
+            draw_text_shadowed(font, "BEST SCORE TIME: " + high_score_time, (200, 220, 255), topleft=(100 * RES, 395 * RES))
+            draw_text_shadowed(font, "BEST COMBO: " + str(best_combo_this_run) + " CHAIN (x" + str(get_combo_multiplier(best_combo_this_run)) + ")    GRAZES: " + str(graze_count_this_run), (120, 230, 255), topleft=(100 * RES, 430 * RES))
+            draw_text_shadowed(font, "ALL-TIME: " + str(lifetime_stats["total_kills"]) + " KILLS / " + str(lifetime_stats["total_boss_kills"]) + " BOSSES / " + str(lifetime_stats["total_runs"]) + " RUNS", (200, 220, 255), topleft=(100 * RES, 460 * RES))
+            draw_text_shadowed(medium_32_pixel_font, "CLOSE THE WINDOW TO EXIT", (150, 150, 150), topleft=(100 * RES, 510 * RES))
 
         if CRT_OVERLAY:
             screen.blit(scanline_overlay, (0, 0))

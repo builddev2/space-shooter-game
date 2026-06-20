@@ -1,4 +1,4 @@
-best_combo=11
-total_kills=100
-total_runs=2
-total_boss_kills=4
+best_combo=13
+total_kills=750
+total_runs=18
+total_boss_kills=39
